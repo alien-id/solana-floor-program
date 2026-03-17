@@ -15,6 +15,7 @@ use crate::state::{LobbyEntry, LockedWaln, ProgramState, RoundRecord};
 
 #[derive(Accounts)]
 pub struct SellWaln<'info> {
+    #[account(mut)]
     pub seller: Signer<'info>,
 
     #[account(
@@ -24,7 +25,9 @@ pub struct SellWaln<'info> {
     )]
     pub contract_state: Account<'info, ProgramState>,
 
+    #[account(constraint = waln_mint.key() == contract_state.waln_mint @ FloorError::InvalidMint)]
     pub waln_mint: Box<InterfaceAccount<'info, Mint>>,
+    #[account(constraint = usdc_mint.key() == contract_state.usdc_mint @ FloorError::InvalidMint)]
     pub usdc_mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
@@ -97,18 +100,22 @@ pub fn handler<'info>(
         );
 
         let investor_triplets = &remaining[1..];
+        let snapshot_price = ctx.accounts.contract_state.floor_price_usdc;
+        let snapshot_size = ctx.accounts.contract_state.round_size_waln;
         execute_round_start(
             investor_triplets,
-            ctx.accounts.contract_state.round_size_waln,
-            ctx.accounts.contract_state.floor_price_usdc,
+            snapshot_size,
+            snapshot_price,
         )?;
+        ctx.accounts.contract_state.current_round_floor_price = snapshot_price;
+        ctx.accounts.contract_state.current_round_size_waln = snapshot_size;
         ctx.accounts.contract_state.round_started = true;
     }
 
     {
         let state = &ctx.accounts.contract_state;
         let remaining_in_round = state
-            .round_size_waln
+            .current_round_size_waln
             .checked_sub(state.current_round_waln)
             .ok_or(FloorError::ArithmeticOverflow)?;
         require!(
@@ -117,7 +124,7 @@ pub fn handler<'info>(
         );
     }
 
-    let floor_price_usdc = ctx.accounts.contract_state.floor_price_usdc;
+    let floor_price_usdc = ctx.accounts.contract_state.current_round_floor_price;
     let waln_decimals = ctx.accounts.waln_mint.decimals;
     let usdc_decimals = ctx.accounts.usdc_mint.decimals;
     let state_bump = ctx.accounts.contract_state.bump;
@@ -170,18 +177,17 @@ pub fn handler<'info>(
         .ok_or(FloorError::ArithmeticOverflow)?;
 
     // Round End — executes when round is complete.
-    if state.current_round_waln >= state.round_size_waln {
+    if state.current_round_waln >= state.current_round_size_waln {
         let remaining = ctx.remaining_accounts;
-        require!(!remaining.is_empty(), FloorError::InvalidRemainingAccounts);
         require!(
-            (remaining.len() - 1) % 3 == 0,
+            remaining.len() >= 4 && (remaining.len() - 1) % 3 == 0,
             FloorError::InvalidRemainingAccounts
         );
 
         let clock = Clock::get()?;
         let round_index = state.round_count;
         let lock_period = state.lock_period_seconds;
-        let floor_price = state.floor_price_usdc;
+        let floor_price = state.current_round_floor_price;
         let round_size_waln_val = state.round_size_waln;
         let floor_price_usdc_val = state.floor_price_usdc;
 
@@ -281,8 +287,14 @@ pub fn handler<'info>(
             let rent = Rent::get()?.minimum_balance(space);
 
             invoke_signed(
-                &system_instruction::allocate(locked_waln_info.key, space as u64),
-                &[locked_waln_info.clone(), system_program_info.clone()],
+                &system_instruction::create_account(
+                    seller_info.key,
+                    locked_waln_info.key,
+                    rent,
+                    space as u64,
+                    &crate::ID,
+                ),
+                &[seller_info.clone(), locked_waln_info.clone(), system_program_info.clone()],
                 &[&[
                     LOCKED_WALN_SEED,
                     investor.as_ref(),
@@ -290,20 +302,6 @@ pub fn handler<'info>(
                     &[locked_waln_bump],
                 ]],
             )?;
-
-            invoke_signed(
-                &system_instruction::assign(locked_waln_info.key, &crate::ID),
-                &[locked_waln_info.clone(), system_program_info.clone()],
-                &[&[
-                    LOCKED_WALN_SEED,
-                    investor.as_ref(),
-                    &round_index.to_le_bytes(),
-                    &[locked_waln_bump],
-                ]],
-            )?;
-
-            **contract_state_info.try_borrow_mut_lamports()? -= rent;
-            **locked_waln_info.try_borrow_mut_lamports()? += rent;
 
             {
                 let mut data = locked_waln_info.try_borrow_mut_data()?;
@@ -337,27 +335,20 @@ pub fn handler<'info>(
         let round_record_rent = Rent::get()?.minimum_balance(round_record_space);
 
         invoke_signed(
-            &system_instruction::allocate(round_record_info.key, round_record_space as u64),
-            &[round_record_info.clone(), system_program_info.clone()],
+            &system_instruction::create_account(
+                seller_info.key,
+                round_record_info.key,
+                round_record_rent,
+                round_record_space as u64,
+                &crate::ID,
+            ),
+            &[seller_info.clone(), round_record_info.clone(), system_program_info.clone()],
             &[&[
                 ROUND_RECORD_SEED,
                 &round_index.to_le_bytes(),
                 &[round_record_bump],
             ]],
         )?;
-
-        invoke_signed(
-            &system_instruction::assign(round_record_info.key, &crate::ID),
-            &[round_record_info.clone(), system_program_info.clone()],
-            &[&[
-                ROUND_RECORD_SEED,
-                &round_index.to_le_bytes(),
-                &[round_record_bump],
-            ]],
-        )?;
-
-        **contract_state_info.try_borrow_mut_lamports()? -= round_record_rent;
-        **round_record_info.try_borrow_mut_lamports()? += round_record_rent;
 
         {
             let mut rr_data = round_record_info.try_borrow_mut_data()?;
@@ -388,6 +379,7 @@ pub fn handler<'info>(
         state.round_started = false;
 
         // Immediately start next round if eligible investors remain.
+        // Snapshot the current (possibly updated) floor_price_usdc and round_size_waln.
         if execute_round_start(
             investor_triplets,
             round_size_waln_val,
@@ -395,6 +387,8 @@ pub fn handler<'info>(
         )
         .is_ok()
         {
+            state.current_round_floor_price = floor_price_usdc_val;
+            state.current_round_size_waln = round_size_waln_val;
             state.round_started = true;
         }
     }

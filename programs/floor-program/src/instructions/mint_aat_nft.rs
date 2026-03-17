@@ -53,12 +53,15 @@ pub struct MintAatNft<'info> {
 }
 
 pub fn handler(ctx: Context<MintAatNft>, waln_allocation: u64) -> Result<()> {
-    let space = match ExtensionType::try_calculate_account_len::<Mint>(&[ExtensionType::MetadataPointer]) {
+    let space = match ExtensionType::try_calculate_account_len::<Mint>(&[
+        ExtensionType::MetadataPointer,
+        ExtensionType::NonTransferable,
+    ]) {
         Ok(space) => space,
         Err(_) => return err!(FloorError::InvalidMintAccountSpace),
     };
 
-    let meta_data_space = 250usize;
+    let meta_data_space = 512usize;
     let lamports_required = Rent::get()?.minimum_balance(space + meta_data_space);
 
     let investor_key = ctx.accounts.investor.key();
@@ -95,6 +98,15 @@ pub fn handler(ctx: Context<MintAatNft>, waln_allocation: u64) -> Result<()> {
     invoke(
         &init_meta_data_pointer_ix,
         &[ctx.accounts.mint.to_account_info(), ctx.accounts.nft_authority.to_account_info()]
+    )?;
+
+    invoke(
+        &spl_token_2022::instruction::initialize_non_transferable_mint(
+            &Token2022::id(),
+            &ctx.accounts.mint.key(),
+        )
+        .map_err(|_| error!(FloorError::InvalidMintAccountSpace))?,
+        &[ctx.accounts.mint.to_account_info()],
     )?;
 
     token_2022::initialize_mint2(

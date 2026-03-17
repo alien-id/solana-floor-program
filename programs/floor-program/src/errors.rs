@@ -29,5 +29,11 @@ pub enum FloorError {
     #[msg("Unauthorized — signer is not admin")]
     Unauthorized,
     #[msg("Mint account has insufficient space for required extensions")]
-    InvalidMintAccountSpace
+    InvalidMintAccountSpace,
+    #[msg("Mint does not match the configured mint for this contract")]
+    InvalidMint,
+    #[msg("Cannot withdraw while funds are locked in an active round")]
+    FundsLocked,
+    #[msg("Floor price and round size must be greater than zero")]
+    InvalidParameter,
 }

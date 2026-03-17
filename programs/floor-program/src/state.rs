@@ -14,6 +14,8 @@ pub struct ProgramState {
     pub total_usdc_in_lobby: u64,
     pub round_count: u64,
     pub lock_period_seconds: i64,
+    pub current_round_floor_price: u64,
+    pub current_round_size_waln: u64,
     pub paused: bool,
     pub round_started: bool,
     pub bump: u8,

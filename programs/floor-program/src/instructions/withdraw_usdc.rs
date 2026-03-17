@@ -26,6 +26,7 @@ pub struct WithdrawUsdc<'info> {
     )]
     pub lobby_entry: Account<'info, LobbyEntry>,
 
+    #[account(constraint = usdc_mint.key() == contract_state.usdc_mint @ FloorError::InvalidMint)]
     pub usdc_mint: InterfaceAccount<'info, Mint>,
 
     #[account(
@@ -50,6 +51,8 @@ pub struct WithdrawUsdc<'info> {
 }
 
 pub fn handler(ctx: Context<WithdrawUsdc>, amount: u64) -> Result<()> {
+    require!(!ctx.accounts.contract_state.paused, FloorError::ContractPaused);
+
     let available = ctx.accounts.lobby_entry.usdc_deposited;
     let withdraw_amount = if amount == u64::MAX { available } else { amount };
 

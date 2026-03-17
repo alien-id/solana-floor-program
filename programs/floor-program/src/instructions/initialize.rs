@@ -54,6 +54,10 @@ pub fn handler(
     round_size_waln: u64,
     lock_period_seconds: i64,
 ) -> Result<()> {
+    use crate::errors::FloorError;
+    require!(floor_price_usdc > 0, FloorError::InvalidParameter);
+    require!(round_size_waln > 0, FloorError::InvalidParameter);
+
     let state = &mut ctx.accounts.contract_state;
     state.admin = ctx.accounts.admin.key();
     state.usdc_mint = ctx.accounts.usdc_mint.key();
@@ -61,6 +65,8 @@ pub fn handler(
     state.usdc_vault = ctx.accounts.usdc_vault.key();
     state.waln_vault = ctx.accounts.waln_vault.key();
     state.floor_price_usdc = floor_price_usdc;
+    state.current_round_floor_price = floor_price_usdc;
+    state.current_round_size_waln = round_size_waln;
     state.round_size_waln = round_size_waln;
     state.lock_period_seconds = lock_period_seconds;
     state.current_round_waln = 0;

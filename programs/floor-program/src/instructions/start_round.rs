@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use std::collections::BTreeSet;
 
 use crate::errors::FloorError;
 use crate::nft_utils::verify_aat_nft_and_get_allocation;
@@ -20,7 +21,9 @@ pub fn execute_round_start<'info>(
         .ok_or(FloorError::ArithmeticOverflow)?;
 
     // Pass 1: compute total_waln_allocation across all eligible investors.
+    // Each investor must appear exactly once; duplicate triplets are rejected.
     let mut total_waln_allocation: u64 = 0;
+    let mut seen_investors: BTreeSet<Pubkey> = BTreeSet::new();
     let mut i = 0;
     while i + 2 < triplets.len() {
         let lobby_entry_info = &triplets[i];
@@ -31,6 +34,21 @@ pub fn execute_round_start<'info>(
             Ok(e) => e,
             Err(_) => continue,
         };
+
+        let expected_pda = Pubkey::create_program_address(
+            &[LOBBY_ENTRY_SEED, lobby_entry.investor.as_ref(), &[lobby_entry.bump]],
+            &crate::ID,
+        )
+        .map_err(|_| error!(FloorError::InvalidRemainingAccounts))?;
+        require!(
+            expected_pda == lobby_entry_info.key(),
+            FloorError::InvalidRemainingAccounts
+        );
+
+        require!(
+            seen_investors.insert(lobby_entry.investor),
+            FloorError::InvalidRemainingAccounts
+        );
 
         if lobby_entry.usdc_deposited == 0 {
             continue;

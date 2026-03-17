@@ -29,6 +29,7 @@ pub struct DepositUsdc<'info> {
     )]
     pub lobby_entry: Account<'info, LobbyEntry>,
 
+    #[account(constraint = usdc_mint.key() == contract_state.usdc_mint @ FloorError::InvalidMint)]
     pub usdc_mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
@@ -57,6 +58,7 @@ pub struct DepositUsdc<'info> {
 }
 
 pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
+    require!(!ctx.accounts.contract_state.paused, FloorError::ContractPaused);
     require!(usdc_amount > 0, FloorError::ZeroAmount);
 
     verify_aat_nft_and_get_allocation(

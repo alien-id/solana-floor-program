@@ -26,6 +26,7 @@ pub struct ClaimWaln<'info> {
     )]
     pub locked_waln: Account<'info, LockedWaln>,
 
+    #[account(constraint = waln_mint.key() == contract_state.waln_mint @ FloorError::InvalidMint)]
     pub waln_mint: InterfaceAccount<'info, Mint>,
 
     #[account(
@@ -50,6 +51,8 @@ pub struct ClaimWaln<'info> {
 }
 
 pub fn handler(ctx: Context<ClaimWaln>, _round_index: u64) -> Result<()> {
+    require!(!ctx.accounts.contract_state.paused, FloorError::ContractPaused);
+
     let locked_waln = &mut ctx.accounts.locked_waln;
     require!(!locked_waln.claimed, FloorError::AlreadyClaimed);
 
