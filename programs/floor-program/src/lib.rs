@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 
 pub mod errors;
 pub mod instructions;
+pub mod nft_utils;
 pub mod seeds;
 pub mod state;
 
@@ -38,16 +39,12 @@ pub mod floor_program {
         instructions::admin::set_paused(ctx, paused)
     }
 
-    pub fn deposit_usdc(ctx: Context<DepositUsdc>, usdc_amount: u64, aat_amount: u64) -> Result<()> {
-        instructions::deposit_usdc::handler(ctx, usdc_amount, aat_amount)
+    pub fn deposit_usdc(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
+        instructions::deposit_usdc::handler(ctx, usdc_amount)
     }
 
     pub fn withdraw_usdc(ctx: Context<WithdrawUsdc>, amount: u64) -> Result<()> {
         instructions::withdraw_usdc::handler(ctx, amount)
-    }
-
-    pub fn withdraw_aat(ctx: Context<WithdrawAat>, amount: u64) -> Result<()> {
-        instructions::withdraw_aat::handler(ctx, amount)
     }
 
     pub fn sell_waln<'info>(ctx: Context<'_, '_, 'info, 'info, SellWaln<'info>>, waln_amount: u64) -> Result<()> {
@@ -56,5 +53,9 @@ pub mod floor_program {
 
     pub fn claim_waln(ctx: Context<ClaimWaln>, round_index: u64) -> Result<()> {
         instructions::claim_waln::handler(ctx, round_index)
+    }
+
+    pub fn mint_aat_nft(ctx: Context<MintAatNft>, waln_allocation: u64) -> Result<()> {
+        instructions::mint_aat_nft::handler(ctx, waln_allocation)
     }
 }

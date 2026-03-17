@@ -1,6 +1,6 @@
 import * as anchor from "@coral-xyz/anchor";
-import { BN } from "@coral-xyz/anchor";
-import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
+import { AnchorProvider, BN } from "@coral-xyz/anchor";
+import { ComputeBudgetProgram, Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import { assert } from "chai";
 import { FloorSdk } from "../sdk/floor-sdk";
 import {
@@ -18,10 +18,10 @@ import {
 // round_size  = 100: 100 wALN units triggers a round
 // round cap USDC  = 100 * 50 = 5_000 USDC units
 //
-// Investor1: 5_000 USDC, 100 AAT  → AAT share = 100/150
-// Investor2: 5_000 USDC,  50 AAT  → AAT share =  50/150
+// Investor1: 5_000 USDC, waln_allocation=100 → share = 100/150
+// Investor2: 5_000 USDC, waln_allocation=50  → share =  50/150
 //
-// After start_round (integer arithmetic):
+// After Round Start (integer arithmetic):
 //   Investor1 locked = floor(5000 * 100/150) = 3333 USDC  deposited = 1667
 //   Investor2 locked = floor(5000 *  50/150) = 1666 USDC  deposited = 3334
 //
@@ -35,9 +35,7 @@ const ROUND_SIZE = new BN(100);
 const LOCK_PERIOD = new BN(0);
 
 const INVESTOR1_USDC = new BN(5_000);
-const INVESTOR1_AAT = new BN(100);
 const INVESTOR2_USDC = new BN(5_000);
-const INVESTOR2_AAT = new BN(50);
 
 const SELL_AMOUNT_PARTIAL = new BN(50);
 const SELL_AMOUNT_TRIGGER = new BN(50);
@@ -55,17 +53,18 @@ describe("floor-program", () => {
   // Mints (set in before())
   let usdcMint: PublicKey;
   let walnMint: PublicKey;
-  let aatMint: PublicKey;
 
   // Token accounts (set in before())
   let investor1UsdcAcc: PublicKey;
   let investor2UsdcAcc: PublicKey;
-  let investor1AatAcc: PublicKey;
-  let investor2AatAcc: PublicKey;
   let investor1WalnAcc: PublicKey;
   let investor2WalnAcc: PublicKey;
   let sellerWalnAcc: PublicKey;
   let sellerUsdcAcc: PublicKey;
+
+  // AAT NFT mint pubkeys (Token-2022, PDA-derived — set in before())
+  let investor1NftPubkey: PublicKey;
+  let investor2NftPubkey: PublicKey;
 
   // Derived PDAs (set in before())
   let contractState: PublicKey;
@@ -84,6 +83,10 @@ describe("floor-program", () => {
     [lobbyEntry1] = sdk.lobbyEntryPda(investor1.publicKey);
     [lobbyEntry2] = sdk.lobbyEntryPda(investor2.publicKey);
 
+    // AAT NFT mint pubkeys are PDAs derived from investor pubkeys
+    [investor1NftPubkey] = sdk.aatNftMintPda(investor1.publicKey);
+    [investor2NftPubkey] = sdk.aatNftMintPda(investor2.publicKey);
+
     // Airdrop SOL to test keypairs
     await Promise.all(
       [investor1, investor2, seller].map(async (kp) => {
@@ -98,7 +101,6 @@ describe("floor-program", () => {
     // Create token mints (0 decimals for simple integer arithmetic)
     usdcMint = await createTestMint(provider, 0);
     walnMint = await createTestMint(provider, 0);
-    aatMint = await createTestMint(provider, 0);
 
     // Create token accounts
     investor1UsdcAcc = await createTestTokenAccount(
@@ -109,16 +111,6 @@ describe("floor-program", () => {
     investor2UsdcAcc = await createTestTokenAccount(
       provider,
       usdcMint,
-      investor2.publicKey
-    );
-    investor1AatAcc = await createTestTokenAccount(
-      provider,
-      aatMint,
-      investor1.publicKey
-    );
-    investor2AatAcc = await createTestTokenAccount(
-      provider,
-      aatMint,
       investor2.publicKey
     );
     investor1WalnAcc = await createTestTokenAccount(
@@ -142,13 +134,53 @@ describe("floor-program", () => {
       seller.publicKey
     );
 
-    // Mint tokens to investors and seller
+    // Mint USDC to investors and wALN to seller
     await mintTokensTo(provider, usdcMint, investor1UsdcAcc, 10_000n);
     await mintTokensTo(provider, usdcMint, investor2UsdcAcc, 10_000n);
-    await mintTokensTo(provider, aatMint, investor1AatAcc, 100n);
-    await mintTokensTo(provider, aatMint, investor2AatAcc, 50n);
     // Seller needs enough wALN to sell: partial (50) + trigger (50) = 100 total
     await mintTokensTo(provider, walnMint, sellerWalnAcc, 200n);
+
+    // ------------------------------------------------------------------
+    // Initialize contract (must happen before mintAatNft)
+    // ------------------------------------------------------------------
+    await provider.sendAndConfirm(
+      new Transaction().add(
+        await sdk.initializeIx({
+          admin: admin.publicKey,
+          usdcMint,
+          walnMint,
+          floorPriceUsdc: FLOOR_PRICE,
+          roundSizeWaln: ROUND_SIZE,
+          lockPeriodSeconds: LOCK_PERIOD,
+        })
+      )
+    );
+
+    // ------------------------------------------------------------------
+    // Mint AAT NFTs via the floor program (Token-2022, single transaction).
+    // The mint keypair co-signs so it can be registered as the new account address.
+    // ------------------------------------------------------------------
+    await provider.sendAndConfirm(
+      new Transaction().add(
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+        await sdk.mintAatNftIx({
+          admin: admin.publicKey,
+          investor: investor1.publicKey,
+          walnAllocation: new BN(100),
+        })
+      )
+    );
+
+    await provider.sendAndConfirm(
+      new Transaction().add(
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+        await sdk.mintAatNftIx({
+          admin: admin.publicKey,
+          investor: investor2.publicKey,
+          walnAllocation: new BN(50),
+        })
+      )
+    );
   });
 
   // ---------------------------------------------------------------------------
@@ -156,25 +188,10 @@ describe("floor-program", () => {
   // ---------------------------------------------------------------------------
   describe("initialize", () => {
     it("creates contract state and vaults", async () => {
-      await provider.sendAndConfirm(
-        new Transaction().add(
-          await sdk.initializeIx({
-            admin: admin.publicKey,
-            usdcMint,
-            walnMint,
-            aatMint,
-            floorPriceUsdc: FLOOR_PRICE,
-            roundSizeWaln: ROUND_SIZE,
-            lockPeriodSeconds: LOCK_PERIOD,
-          })
-        )
-      );
-
       const state = await sdk.program.account.programState.fetch(contractState);
       assert.ok(state.admin.equals(admin.publicKey));
       assert.ok(state.usdcMint.equals(usdcMint));
       assert.ok(state.walnMint.equals(walnMint));
-      assert.ok(state.aatMint.equals(aatMint));
       assert.ok(state.floorPriceUsdc.eq(FLOOR_PRICE));
       assert.ok(state.roundSizeWaln.eq(ROUND_SIZE));
       assert.ok(state.lockPeriodSeconds.eq(LOCK_PERIOD));
@@ -191,7 +208,6 @@ describe("floor-program", () => {
               admin: admin.publicKey,
               usdcMint,
               walnMint,
-              aatMint,
               floorPriceUsdc: FLOOR_PRICE,
               roundSizeWaln: ROUND_SIZE,
               lockPeriodSeconds: LOCK_PERIOD,
@@ -281,7 +297,7 @@ describe("floor-program", () => {
   // 3. deposit_usdc
   // ---------------------------------------------------------------------------
   describe("deposit_usdc", () => {
-    it("investor1 deposits USDC + stakes AAT", async () => {
+    it("investor1 deposits USDC (verified via AAT NFT)", async () => {
       const usdcBefore = await getTokenBalance(provider, usdcVault);
 
       await provider.sendAndConfirm(
@@ -289,11 +305,9 @@ describe("floor-program", () => {
           await sdk.depositUsdcIx({
             investor: investor1.publicKey,
             investorUsdcAccount: investor1UsdcAcc,
-            investorAatAccount: investor1AatAcc,
             usdcMint,
-            aatMint,
+            aatNft: investor1NftPubkey,
             usdcAmount: INVESTOR1_USDC,
-            aatAmount: INVESTOR1_AAT,
           })
         ),
         [investor1]
@@ -302,27 +316,23 @@ describe("floor-program", () => {
       const entry = await sdk.program.account.lobbyEntry.fetch(lobbyEntry1);
       assert.ok(entry.investor.equals(investor1.publicKey));
       assert.ok(entry.usdcDeposited.eq(INVESTOR1_USDC));
-      assert.ok(entry.aatStaked.eq(INVESTOR1_AAT));
 
       const state = await sdk.program.account.programState.fetch(contractState);
       assert.ok(state.totalUsdcInLobby.eq(INVESTOR1_USDC));
-      assert.ok(state.totalAatStaked.eq(INVESTOR1_AAT));
 
       const usdcAfter = await getTokenBalance(provider, usdcVault);
       assert.equal(usdcAfter - usdcBefore, BigInt(INVESTOR1_USDC.toNumber()));
     });
 
-    it("investor2 deposits USDC + stakes AAT", async () => {
+    it("investor2 deposits USDC (verified via AAT NFT)", async () => {
       await provider.sendAndConfirm(
         new Transaction().add(
           await sdk.depositUsdcIx({
             investor: investor2.publicKey,
             investorUsdcAccount: investor2UsdcAcc,
-            investorAatAccount: investor2AatAcc,
             usdcMint,
-            aatMint,
+            aatNft: investor2NftPubkey,
             usdcAmount: INVESTOR2_USDC,
-            aatAmount: INVESTOR2_AAT,
           })
         ),
         [investor2]
@@ -331,14 +341,10 @@ describe("floor-program", () => {
       const entry = await sdk.program.account.lobbyEntry.fetch(lobbyEntry2);
       assert.ok(entry.investor.equals(investor2.publicKey));
       assert.ok(entry.usdcDeposited.eq(INVESTOR2_USDC));
-      assert.ok(entry.aatStaked.eq(INVESTOR2_AAT));
 
       const state = await sdk.program.account.programState.fetch(contractState);
       assert.ok(
         state.totalUsdcInLobby.eq(INVESTOR1_USDC.add(INVESTOR2_USDC))
-      );
-      assert.ok(
-        state.totalAatStaked.eq(INVESTOR1_AAT.add(INVESTOR2_AAT))
       );
     });
 
@@ -349,11 +355,9 @@ describe("floor-program", () => {
           await sdk.depositUsdcIx({
             investor: investor1.publicKey,
             investorUsdcAccount: investor1UsdcAcc,
-            investorAatAccount: investor1AatAcc,
             usdcMint,
-            aatMint,
+            aatNft: investor1NftPubkey,
             usdcAmount: extraUsdc,
-            aatAmount: new BN(0),
           })
         ),
         [investor1]
@@ -374,6 +378,30 @@ describe("floor-program", () => {
 
       const entry = await sdk.program.account.lobbyEntry.fetch(lobbyEntry1);
       assert.ok(entry.usdcDeposited.eq(INVESTOR1_USDC));
+    });
+
+    it("rejects deposit with wrong/foreign AAT NFT", async () => {
+      try {
+        await provider.sendAndConfirm(
+          new Transaction().add(
+            await sdk.depositUsdcIx({
+              investor: investor1.publicKey,
+              investorUsdcAccount: investor1UsdcAcc,
+              usdcMint,
+              aatNft: investor2NftPubkey,
+              usdcAmount: new BN(1),
+            })
+          ),
+          [investor1]
+        );
+        assert.fail("should have thrown");
+      } catch (e: any) {
+        assert.ok(
+          e.toString().includes("NoAatNft") ||
+          e.toString().includes("InvalidAatNft"),
+          `expected NoAatNft or InvalidAatNft, got: ${e.toString()}`
+        );
+      }
     });
   });
 
@@ -412,11 +440,9 @@ describe("floor-program", () => {
           await sdk.depositUsdcIx({
             investor: investor1.publicKey,
             investorUsdcAccount: investor1UsdcAcc,
-            investorAatAccount: investor1AatAcc,
             usdcMint,
-            aatMint,
+            aatNft: investor1NftPubkey,
             usdcAmount: withdrawAmt,
-            aatAmount: new BN(0),
           })
         ),
         [investor1]
@@ -477,11 +503,9 @@ describe("floor-program", () => {
             await sdk.depositUsdcIx({
               investor: investor2.publicKey,
               investorUsdcAccount: investor2UsdcAcc,
-              investorAatAccount: investor2AatAcc,
               usdcMint,
-              aatMint,
+              aatNft: investor2NftPubkey,
               usdcAmount: new BN(1),
-              aatAmount: new BN(0),
             })
           ),
           [investor2]
@@ -530,8 +554,10 @@ describe("floor-program", () => {
               { pubkey: roundRecord0, isWritable: true },
               { pubkey: lobbyEntry1, isWritable: true },
               { pubkey: lockedWaln1, isWritable: true },
+              { pubkey: investor1NftPubkey, isWritable: false },
               { pubkey: lobbyEntry2, isWritable: true },
               { pubkey: lockedWaln2, isWritable: true },
+              { pubkey: investor2NftPubkey, isWritable: false },
             ],
           })
         ),
@@ -607,7 +633,6 @@ describe("floor-program", () => {
       const [lockedWaln2] = sdk.lockedWalnPda(investor2.publicKey, round0);
 
       const sellerUsdcBefore = await getTokenBalance(provider, sellerUsdcAcc);
-      const usdcVaultBefore = await getTokenBalance(provider, usdcVault);
 
       await provider.sendAndConfirm(
         new Transaction().add(
@@ -622,8 +647,10 @@ describe("floor-program", () => {
               { pubkey: roundRecord0, isWritable: true },
               { pubkey: lobbyEntry1, isWritable: true },
               { pubkey: lockedWaln1, isWritable: true },
+              { pubkey: investor1NftPubkey, isWritable: false },
               { pubkey: lobbyEntry2, isWritable: true },
               { pubkey: lockedWaln2, isWritable: true },
+              { pubkey: investor2NftPubkey, isWritable: false },
             ],
           })
         ),
@@ -641,7 +668,7 @@ describe("floor-program", () => {
       // RoundRecord is created via raw CPI so it's not in the IDL accounts list.
       // Decode the account data manually: skip 8-byte discriminator, then
       // RoundRecord fields in order (all LE): round_index(u64), triggered_at(i64),
-      // waln_purchased(u64), usdc_spent(u64), total_aat_staked_at_trigger(u64),
+      // waln_purchased(u64), usdc_spent(u64), total_waln_allocation_at_trigger(u64),
       // participant_count(u32), bump(u8).
       const rrInfo = await provider.connection.getAccountInfo(roundRecord0);
       assert.ok(rrInfo, "RoundRecord account should exist");
@@ -649,12 +676,12 @@ describe("floor-program", () => {
       const rrRoundIndex = rrBuf.readBigUInt64LE(0);
       const rrWalnPurchased = rrBuf.readBigUInt64LE(16);
       const rrUsdcSpent = rrBuf.readBigUInt64LE(24);
-      const rrTotalAat = rrBuf.readBigUInt64LE(32);
+      const rrTotalAllocation = rrBuf.readBigUInt64LE(32);
       const rrParticipantCount = rrBuf.readUInt32LE(40);
       assert.equal(rrRoundIndex, 0n);
       assert.equal(rrWalnPurchased, 99n); // 66 + 33
       assert.equal(rrUsdcSpent, 4999n);   // 3333 + 1666
-      assert.equal(rrTotalAat, 150n);
+      assert.equal(rrTotalAllocation, 150n); // sum of waln_allocation: 100 + 50
       assert.equal(rrParticipantCount, 2);
 
       // ---- verify ContractState updated ----
@@ -772,120 +799,7 @@ describe("floor-program", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 8. withdraw_aat
-  // ---------------------------------------------------------------------------
-  describe("withdraw_aat", () => {
-    it("investor can withdraw staked AAT", async () => {
-      const entryBefore = await sdk.program.account.lobbyEntry.fetch(lobbyEntry1);
-      const aatBefore = await getTokenBalance(provider, investor1AatAcc);
-      const stateBefore = await sdk.program.account.programState.fetch(contractState);
-
-      const withdrawAmt = new BN(10);
-      await provider.sendAndConfirm(
-        new Transaction().add(
-          await sdk.withdrawAatIx({
-            investor: investor1.publicKey,
-            investorAatAccount: investor1AatAcc,
-            aatMint,
-            amount: withdrawAmt,
-          })
-        ),
-        [investor1]
-      );
-
-      const entryAfter = await sdk.program.account.lobbyEntry.fetch(lobbyEntry1);
-      const aatAfter = await getTokenBalance(provider, investor1AatAcc);
-      const stateAfter = await sdk.program.account.programState.fetch(contractState);
-
-      assert.equal(
-        aatAfter - aatBefore,
-        BigInt(withdrawAmt.toNumber())
-      );
-      assert.ok(
-        entryAfter.aatStaked.eq(entryBefore.aatStaked.sub(withdrawAmt))
-      );
-      assert.ok(
-        stateAfter.totalAatStaked.eq(stateBefore.totalAatStaked.sub(withdrawAmt))
-      );
-
-      // Re-stake the AAT for subsequent tests
-      await provider.sendAndConfirm(
-        new Transaction().add(
-          await sdk.depositUsdcIx({
-            investor: investor1.publicKey,
-            investorUsdcAccount: investor1UsdcAcc,
-            investorAatAccount: investor1AatAcc,
-            usdcMint,
-            aatMint,
-            usdcAmount: new BN(0),
-            aatAmount: withdrawAmt,
-          })
-        ),
-        [investor1]
-      );
-    });
-
-    it("rejects withdrawal exceeding staked amount", async () => {
-      const entry = await sdk.program.account.lobbyEntry.fetch(lobbyEntry1);
-      const tooMuch = entry.aatStaked.addn(1);
-
-      try {
-        await provider.sendAndConfirm(
-          new Transaction().add(
-            await sdk.withdrawAatIx({
-              investor: investor1.publicKey,
-              investorAatAccount: investor1AatAcc,
-              aatMint,
-              amount: tooMuch,
-            })
-          ),
-          [investor1]
-        );
-        assert.fail("should have thrown");
-      } catch (e: any) {
-        assert.include(e.toString(), "InsufficientFunds");
-      }
-    });
-
-    it("allows u64::MAX to withdraw all staked AAT", async () => {
-      const entryBefore = await sdk.program.account.lobbyEntry.fetch(lobbyEntry1);
-      const fullAmount = entryBefore.aatStaked;
-
-      await provider.sendAndConfirm(
-        new Transaction().add(
-          await sdk.withdrawAatIx({
-            investor: investor1.publicKey,
-            investorAatAccount: investor1AatAcc,
-            aatMint,
-            amount: new BN("18446744073709551615"),
-          })
-        ),
-        [investor1]
-      );
-
-      const entryAfter = await sdk.program.account.lobbyEntry.fetch(lobbyEntry1);
-      assert.ok(entryAfter.aatStaked.eqn(0));
-
-      // Re-stake for subsequent tests
-      await provider.sendAndConfirm(
-        new Transaction().add(
-          await sdk.depositUsdcIx({
-            investor: investor1.publicKey,
-            investorUsdcAccount: investor1UsdcAcc,
-            investorAatAccount: investor1AatAcc,
-            usdcMint,
-            aatMint,
-            usdcAmount: new BN(0),
-            aatAmount: fullAmount,
-          })
-        ),
-        [investor1]
-      );
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // 9. Vault integrity — USDC vault balance
+  // 8. Vault integrity — USDC vault balance
   // ---------------------------------------------------------------------------
   describe("vault integrity", () => {
     it("USDC vault balance reflects deposits minus seller payments", async () => {
@@ -914,7 +828,7 @@ describe("floor-program", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 10. Fix verification: total_usdc_in_lobby accounting
+  // 9. Fix verification: total_usdc_in_lobby accounting
   // ---------------------------------------------------------------------------
   describe("total_usdc_in_lobby accounting", () => {
     it("total_usdc_in_lobby equals sum of deposited + locked across entries", async () => {
@@ -944,7 +858,7 @@ describe("floor-program", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 11. Fix verification: seller does not pay rent for round accounts
+  // 10. Fix verification: seller does not pay rent for round accounts
   // ---------------------------------------------------------------------------
   describe("seller rent-free round trigger", () => {
     before(async () => {
@@ -969,11 +883,9 @@ describe("floor-program", () => {
           await sdk.depositUsdcIx({
             investor: investor1.publicKey,
             investorUsdcAccount: investor1UsdcAcc,
-            investorAatAccount: investor1AatAcc,
             usdcMint,
-            aatMint,
+            aatNft: investor1NftPubkey,
             usdcAmount: new BN(5000),
-            aatAmount: new BN(0),
           })
         ),
         [investor1]
@@ -983,11 +895,9 @@ describe("floor-program", () => {
           await sdk.depositUsdcIx({
             investor: investor2.publicKey,
             investorUsdcAccount: investor2UsdcAcc,
-            investorAatAccount: investor2AatAcc,
             usdcMint,
-            aatMint,
+            aatNft: investor2NftPubkey,
             usdcAmount: new BN(5000),
-            aatAmount: new BN(0),
           })
         ),
         [investor2]
@@ -1019,8 +929,10 @@ describe("floor-program", () => {
               { pubkey: roundRecord1, isWritable: true },
               { pubkey: lobbyEntry1, isWritable: true },
               { pubkey: lockedWaln1r1, isWritable: true },
+              { pubkey: investor1NftPubkey, isWritable: false },
               { pubkey: lobbyEntry2, isWritable: true },
               { pubkey: lockedWaln2r1, isWritable: true },
+              { pubkey: investor2NftPubkey, isWritable: false },
             ],
           })
         ),
@@ -1045,7 +957,7 @@ describe("floor-program", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 12. Fix verification: sell cap prevents round overshoot
+  // 11. Fix verification: sell cap prevents round overshoot
   // ---------------------------------------------------------------------------
   describe("sell cap — no overshoot allowed", () => {
     before(async () => {
@@ -1070,11 +982,9 @@ describe("floor-program", () => {
           await sdk.depositUsdcIx({
             investor: investor1.publicKey,
             investorUsdcAccount: investor1UsdcAcc,
-            investorAatAccount: investor1AatAcc,
             usdcMint,
-            aatMint,
+            aatNft: investor1NftPubkey,
             usdcAmount: new BN(10000),
-            aatAmount: new BN(0),
           })
         ),
         [investor1]
@@ -1084,11 +994,9 @@ describe("floor-program", () => {
           await sdk.depositUsdcIx({
             investor: investor2.publicKey,
             investorUsdcAccount: investor2UsdcAcc,
-            investorAatAccount: investor2AatAcc,
             usdcMint,
-            aatMint,
+            aatNft: investor2NftPubkey,
             usdcAmount: new BN(10000),
-            aatAmount: new BN(0),
           })
         ),
         [investor2]
@@ -1096,7 +1004,7 @@ describe("floor-program", () => {
     });
 
     it("rejects a sell that would exceed remaining round capacity", async () => {
-      // Round-2 is active (auto-started after round-1 end in section 11).
+      // Round-2 is active (auto-started after round-1 end in section 10).
       // current_round_waln = 0, round_size = 100. Selling 101 must fail.
       try {
         await provider.sendAndConfirm(
@@ -1112,8 +1020,10 @@ describe("floor-program", () => {
                 { pubkey: sdk.roundRecordPda(new BN(2))[0], isWritable: true },
                 { pubkey: lobbyEntry1, isWritable: true },
                 { pubkey: sdk.lockedWalnPda(investor1.publicKey, new BN(2))[0], isWritable: true },
+                { pubkey: investor1NftPubkey, isWritable: false },
                 { pubkey: lobbyEntry2, isWritable: true },
                 { pubkey: sdk.lockedWalnPda(investor2.publicKey, new BN(2))[0], isWritable: true },
+                { pubkey: investor2NftPubkey, isWritable: false },
               ],
             })
           ),
@@ -1145,8 +1055,10 @@ describe("floor-program", () => {
               { pubkey: sdk.roundRecordPda(new BN(2))[0], isWritable: true },
               { pubkey: lobbyEntry1, isWritable: true },
               { pubkey: sdk.lockedWalnPda(investor1.publicKey, new BN(2))[0], isWritable: true },
+              { pubkey: investor1NftPubkey, isWritable: false },
               { pubkey: lobbyEntry2, isWritable: true },
               { pubkey: sdk.lockedWalnPda(investor2.publicKey, new BN(2))[0], isWritable: true },
+              { pubkey: investor2NftPubkey, isWritable: false },
             ],
           })
         ),
@@ -1174,8 +1086,10 @@ describe("floor-program", () => {
                 { pubkey: sdk.roundRecordPda(new BN(2))[0], isWritable: true },
                 { pubkey: lobbyEntry1, isWritable: true },
                 { pubkey: sdk.lockedWalnPda(investor1.publicKey, new BN(2))[0], isWritable: true },
+                { pubkey: investor1NftPubkey, isWritable: false },
                 { pubkey: lobbyEntry2, isWritable: true },
                 { pubkey: sdk.lockedWalnPda(investor2.publicKey, new BN(2))[0], isWritable: true },
+                { pubkey: investor2NftPubkey, isWritable: false },
               ],
             })
           ),
@@ -1209,8 +1123,10 @@ describe("floor-program", () => {
               { pubkey: roundRecord, isWritable: true },
               { pubkey: lobbyEntry1, isWritable: true },
               { pubkey: lockedWaln1, isWritable: true },
+              { pubkey: investor1NftPubkey, isWritable: false },
               { pubkey: lobbyEntry2, isWritable: true },
               { pubkey: lockedWaln2, isWritable: true },
+              { pubkey: investor2NftPubkey, isWritable: false },
             ],
           })
         ),

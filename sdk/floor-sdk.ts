@@ -1,7 +1,16 @@
+import * as anchor from "@coral-xyz/anchor";
 import { AnchorProvider, BN, Program } from "@coral-xyz/anchor";
 import { PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import {
+  TOKEN_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  getAssociatedTokenAddressSync,
+} from "@solana/spl-token";
 import { FloorProgram } from "../target/types/floor_program";
+
+const TOKEN_2022_PROGRAM_ID = new PublicKey(
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+);
 
 export class FloorSdk {
   readonly provider: AnchorProvider;
@@ -42,13 +51,6 @@ export class FloorSdk {
     );
   }
 
-  aatVaultPda(): [PublicKey, number] {
-    return PublicKey.findProgramAddressSync(
-      [Buffer.from("aat_vault")],
-      this.programId
-    );
-  }
-
   lobbyEntryPda(investor: PublicKey): [PublicKey, number] {
     return PublicKey.findProgramAddressSync(
       [Buffer.from("lobby_entry"), investor.toBuffer()],
@@ -72,6 +74,32 @@ export class FloorSdk {
     );
   }
 
+  /** Shared PDA that acts as mint authority for all AAT NFTs. */
+  nftAuthorityPda(): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync(
+      [Buffer.from("nft_authority")],
+      this.programId
+    );
+  }
+
+  /** PDA-derived Token-2022 mint for an investor's AAT NFT. */
+  aatNftMintPda(investor: PublicKey): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync(
+      [Buffer.from("aat_nft"), investor.toBuffer()],
+      this.programId
+    );
+  }
+
+  /** Investor's ATA for their AAT NFT (Token-2022). */
+  investorAatAccount(investor: PublicKey, mint: PublicKey): PublicKey {
+    return getAssociatedTokenAddressSync(
+      mint,
+      investor,
+      false,
+      TOKEN_2022_PROGRAM_ID
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Instructions
   // ---------------------------------------------------------------------------
@@ -80,18 +108,15 @@ export class FloorSdk {
     admin: PublicKey;
     usdcMint: PublicKey;
     walnMint: PublicKey;
-    aatMint: PublicKey;
     floorPriceUsdc: BN;
     roundSizeWaln: BN;
     lockPeriodSeconds: BN;
     usdcTokenProgram?: PublicKey;
     walnTokenProgram?: PublicKey;
-    aatTokenProgram?: PublicKey;
   }): Promise<TransactionInstruction> {
     const [contractState] = this.contractStatePda();
     const [usdcVault] = this.usdcVaultPda();
     const [walnVault] = this.walnVaultPda();
-    const [aatVault] = this.aatVaultPda();
 
     return this.program.methods
       .initialize(args.floorPriceUsdc, args.roundSizeWaln, args.lockPeriodSeconds)
@@ -100,14 +125,37 @@ export class FloorSdk {
         contractState,
         usdcMint: args.usdcMint,
         walnMint: args.walnMint,
-        aatMint: args.aatMint,
         usdcVault,
         walnVault,
-        aatVault,
         systemProgram: SystemProgram.programId,
         usdcTokenProgram: args.usdcTokenProgram ?? TOKEN_PROGRAM_ID,
         walnTokenProgram: args.walnTokenProgram ?? TOKEN_PROGRAM_ID,
-        aatTokenProgram: args.aatTokenProgram ?? TOKEN_PROGRAM_ID,
+      })
+      .instruction();
+  }
+
+  async mintAatNftIx(args: {
+    admin: PublicKey;
+    investor: PublicKey;
+    walnAllocation: BN;
+  }): Promise<TransactionInstruction> {
+    const [contractState] = this.contractStatePda();
+    const [nftAuthority] = this.nftAuthorityPda();
+    const [mint] = this.aatNftMintPda(args.investor);
+    const investorAatAccount = this.investorAatAccount(args.investor, mint);
+
+    return this.program.methods
+      .mintAatNft(args.walnAllocation)
+      .accounts({
+        admin: args.admin,
+        mint,
+        contractState,
+        investor: args.investor,
+        investorAatAccount,
+        nftAuthority,
+        systemProgram: SystemProgram.programId,
+        tokenProgram: TOKEN_2022_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       })
       .instruction();
   }
@@ -115,33 +163,26 @@ export class FloorSdk {
   async depositUsdcIx(args: {
     investor: PublicKey;
     investorUsdcAccount: PublicKey;
-    investorAatAccount: PublicKey;
     usdcMint: PublicKey;
-    aatMint: PublicKey;
+    aatNft: PublicKey;
     usdcAmount: BN;
-    aatAmount: BN;
     usdcTokenProgram?: PublicKey;
-    aatTokenProgram?: PublicKey;
   }): Promise<TransactionInstruction> {
     const [contractState] = this.contractStatePda();
     const [usdcVault] = this.usdcVaultPda();
-    const [aatVault] = this.aatVaultPda();
     const [lobbyEntry] = this.lobbyEntryPda(args.investor);
 
     return this.program.methods
-      .depositUsdc(args.usdcAmount, args.aatAmount)
+      .depositUsdc(args.usdcAmount)
       .accounts({
         investor: args.investor,
         contractState,
         lobbyEntry,
         usdcMint: args.usdcMint,
-        aatMint: args.aatMint,
         investorUsdcAccount: args.investorUsdcAccount,
         usdcVault,
-        investorAatAccount: args.investorAatAccount,
-        aatVault,
+        aatNft: args.aatNft,
         usdcTokenProgram: args.usdcTokenProgram ?? TOKEN_PROGRAM_ID,
-        aatTokenProgram: args.aatTokenProgram ?? TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
       .instruction();
@@ -168,31 +209,6 @@ export class FloorSdk {
         investorUsdcAccount: args.investorUsdcAccount,
         usdcVault,
         usdcTokenProgram: args.usdcTokenProgram ?? TOKEN_PROGRAM_ID,
-      })
-      .instruction();
-  }
-
-  async withdrawAatIx(args: {
-    investor: PublicKey;
-    investorAatAccount: PublicKey;
-    aatMint: PublicKey;
-    amount: BN;
-    aatTokenProgram?: PublicKey;
-  }): Promise<TransactionInstruction> {
-    const [contractState] = this.contractStatePda();
-    const [aatVault] = this.aatVaultPda();
-    const [lobbyEntry] = this.lobbyEntryPda(args.investor);
-
-    return this.program.methods
-      .withdrawAat(args.amount)
-      .accounts({
-        investor: args.investor,
-        contractState,
-        lobbyEntry,
-        aatMint: args.aatMint,
-        investorAatAccount: args.investorAatAccount,
-        aatVault,
-        aatTokenProgram: args.aatTokenProgram ?? TOKEN_PROGRAM_ID,
       })
       .instruction();
   }

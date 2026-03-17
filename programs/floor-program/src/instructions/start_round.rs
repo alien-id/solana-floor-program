@@ -1,40 +1,94 @@
 use anchor_lang::prelude::*;
 
 use crate::errors::FloorError;
+use crate::nft_utils::verify_aat_nft_and_get_allocation;
 use crate::seeds::LOBBY_ENTRY_SEED;
 use crate::state::LobbyEntry;
 
+/// Executes Round Start over a slice of investor triplets
+/// (LobbyEntry, LockedWaln placeholder, Core/Token-2022 mint Asset).
+///
+/// Returns the total waln_allocation summed across all eligible investors,
+/// for use in the RoundRecord.
 pub fn execute_round_start<'info>(
-    accounts: &'info [AccountInfo<'info>],
-    stride: usize,
-    total_aat_staked: u64,
+    triplets: &'info [AccountInfo<'info>],
     round_size_waln: u64,
     floor_price_usdc: u64,
-) -> Result<()> {
+) -> Result<u64> {
     let round_cap_usdc = (round_size_waln as u128)
         .checked_mul(floor_price_usdc as u128)
         .ok_or(FloorError::ArithmeticOverflow)?;
 
+    // Pass 1: compute total_waln_allocation across all eligible investors.
+    let mut total_waln_allocation: u64 = 0;
     let mut i = 0;
-    while i < accounts.len() {
-        let entry_info = &accounts[i];
-        i += stride;
-        let mut lobby_entry: Account<LobbyEntry> = Account::try_from(entry_info)?;
+    while i + 2 < triplets.len() {
+        let lobby_entry_info = &triplets[i];
+        let core_asset_info = &triplets[i + 2];
+        i += 3;
+
+        let lobby_entry: Account<LobbyEntry> = match Account::try_from(lobby_entry_info) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        if lobby_entry.usdc_deposited == 0 {
+            continue;
+        }
+
+        let alloc = match verify_aat_nft_and_get_allocation(
+            core_asset_info,
+            &lobby_entry.investor,
+        ) {
+            Ok(a) if a > 0 => a,
+            _ => continue,
+        };
+
+        total_waln_allocation = total_waln_allocation
+            .checked_add(alloc)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+    }
+
+    require!(total_waln_allocation > 0, FloorError::NoEligibleInvestors);
+
+    // Pass 2: compute and persist usdc_locked_current_round for each eligible investor.
+    let mut i = 0;
+    while i + 2 < triplets.len() {
+        let lobby_entry_info = &triplets[i];
+        let core_asset_info = &triplets[i + 2];
+        i += 3;
+
+        let mut lobby_entry: Account<LobbyEntry> = match Account::try_from(lobby_entry_info) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
 
         let expected_pda = Pubkey::create_program_address(
             &[LOBBY_ENTRY_SEED, lobby_entry.investor.as_ref(), &[lobby_entry.bump]],
             &crate::ID,
-        ).map_err(|_| error!(FloorError::InvalidRemainingAccounts))?;
-        require!(expected_pda == entry_info.key(), FloorError::InvalidRemainingAccounts);
+        )
+        .map_err(|_| error!(FloorError::InvalidRemainingAccounts))?;
+        require!(
+            expected_pda == lobby_entry_info.key(),
+            FloorError::InvalidRemainingAccounts
+        );
 
-        if lobby_entry.aat_staked == 0 || lobby_entry.usdc_deposited == 0 {
+        if lobby_entry.usdc_deposited == 0 {
             continue;
         }
 
+        let alloc = match verify_aat_nft_and_get_allocation(
+            core_asset_info,
+            &lobby_entry.investor,
+        ) {
+            Ok(a) if a > 0 => a,
+            _ => continue,
+        };
+
         let usdc_locked_u128 = round_cap_usdc
-            .checked_mul(lobby_entry.aat_staked as u128)
+            .checked_mul(alloc as u128)
             .ok_or(FloorError::ArithmeticOverflow)?
-            .checked_div(total_aat_staked as u128)
+            .checked_div(total_waln_allocation as u128)
             .ok_or(FloorError::ArithmeticOverflow)?;
 
         let usdc_locked = usdc_locked_u128.min(lobby_entry.usdc_deposited as u128) as u64;
@@ -53,5 +107,5 @@ pub fn execute_round_start<'info>(
         lobby_entry.exit(&crate::ID)?;
     }
 
-    Ok(())
+    Ok(total_waln_allocation)
 }

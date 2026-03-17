@@ -18,12 +18,16 @@ pub enum FloorError {
     ArithmeticOverflow,
     #[msg("Invalid investor — account does not belong to signer")]
     InvalidInvestor,
-    #[msg("No AAT staked in lobby")]
-    NoAatStaked,
+    #[msg("No eligible investors with valid AAT NFTs and USDC deposited")]
+    NoEligibleInvestors,
+    #[msg("Investor does not hold a valid AAT NFT from the configured collection")]
+    NoAatNft,
+    #[msg("Core Asset fails verification (wrong collection, missing attribute, or invalid format)")]
+    InvalidAatNft,
     #[msg("Invalid remaining accounts layout")]
     InvalidRemainingAccounts,
     #[msg("Unauthorized — signer is not admin")]
     Unauthorized,
-    // #[msg("AAT mint must have the NonTransferable Token-2022 extension")]
-    // AatMintNotNonTransferable,
+    #[msg("Mint account has insufficient space for required extensions")]
+    InvalidMintAccountSpace
 }

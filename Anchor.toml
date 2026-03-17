@@ -15,5 +15,9 @@ url = "https://api.apr.dev"
 cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
+[test.validator]
+bind_address = "127.0.0.1"
+deactivate_feature = ["CxeBn9PVeeXbmjbNwLv6U4C6svNxnC4JX6mfkvgeMocM"]
+
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 \"tests/**/*.ts\""

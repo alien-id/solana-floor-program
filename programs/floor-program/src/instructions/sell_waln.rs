@@ -6,9 +6,12 @@ use anchor_spl::token_interface::{
 
 use crate::errors::FloorError;
 use crate::instructions::start_round::execute_round_start;
-
-use crate::seeds::{CONTRACT_STATE_SEED, LOBBY_ENTRY_SEED, LOCKED_WALN_SEED, ROUND_RECORD_SEED, USDC_VAULT_SEED, WALN_VAULT_SEED};
-use crate::state::{ProgramState, LobbyEntry, LockedWaln, RoundRecord};
+use crate::nft_utils::verify_aat_nft_and_get_allocation;
+use crate::seeds::{
+    CONTRACT_STATE_SEED, LOBBY_ENTRY_SEED, LOCKED_WALN_SEED, ROUND_RECORD_SEED, USDC_VAULT_SEED,
+    WALN_VAULT_SEED,
+};
+use crate::state::{LobbyEntry, LockedWaln, ProgramState, RoundRecord};
 
 #[derive(Accounts)]
 pub struct SellWaln<'info> {
@@ -75,14 +78,14 @@ pub fn handler<'info>(
         require!(waln_amount > 0, FloorError::ZeroAmount);
     }
 
+    // Round Start (lazy) — executes when round_started = false.
     if !ctx.accounts.contract_state.round_started {
-        let total_aat = ctx.accounts.contract_state.total_aat_staked;
-        require!(total_aat > 0, FloorError::NoAatStaked);
         let remaining = ctx.remaining_accounts;
         require!(
-            remaining.len() >= 3 && (remaining.len() - 1) % 2 == 0,
+            remaining.len() >= 4 && (remaining.len() - 1) % 3 == 0,
             FloorError::InvalidRemainingAccounts
         );
+
         let round_index = ctx.accounts.contract_state.round_count;
         let (expected_rr_pda, _) = Pubkey::find_program_address(
             &[ROUND_RECORD_SEED, &round_index.to_le_bytes()],
@@ -92,11 +95,10 @@ pub fn handler<'info>(
             expected_rr_pda == remaining[0].key(),
             FloorError::InvalidRemainingAccounts
         );
-        let investor_pairs = &remaining[1..];
+
+        let investor_triplets = &remaining[1..];
         execute_round_start(
-            investor_pairs,
-            2,
-            total_aat,
+            investor_triplets,
             ctx.accounts.contract_state.round_size_waln,
             ctx.accounts.contract_state.floor_price_usdc,
         )?;
@@ -167,11 +169,12 @@ pub fn handler<'info>(
         .checked_add(waln_amount)
         .ok_or(FloorError::ArithmeticOverflow)?;
 
+    // Round End — executes when round is complete.
     if state.current_round_waln >= state.round_size_waln {
         let remaining = ctx.remaining_accounts;
         require!(!remaining.is_empty(), FloorError::InvalidRemainingAccounts);
         require!(
-            (remaining.len() - 1) % 2 == 0,
+            (remaining.len() - 1) % 3 == 0,
             FloorError::InvalidRemainingAccounts
         );
 
@@ -179,7 +182,6 @@ pub fn handler<'info>(
         let round_index = state.round_count;
         let lock_period = state.lock_period_seconds;
         let floor_price = state.floor_price_usdc;
-        let total_aat = state.total_aat_staked;
         let round_size_waln_val = state.round_size_waln;
         let floor_price_usdc_val = state.floor_price_usdc;
 
@@ -189,7 +191,7 @@ pub fn handler<'info>(
             .ok_or(FloorError::ArithmeticOverflow)?;
 
         let round_record_info = &remaining[0];
-        let investor_pairs = &remaining[1..];
+        let investor_triplets = &remaining[1..];
 
         let (round_record_pda, round_record_bump) = Pubkey::find_program_address(
             &[ROUND_RECORD_SEED, &round_index.to_le_bytes()],
@@ -203,22 +205,49 @@ pub fn handler<'info>(
         let mut total_usdc_spent: u64 = 0;
         let mut total_waln_purchased: u64 = 0;
         let mut participant_count: u32 = 0;
+        let mut total_waln_allocation_at_trigger: u64 = 0;
 
-        for chunk in investor_pairs.chunks(2) {
+        for chunk in investor_triplets.chunks(3) {
+            if chunk.len() < 3 {
+                break;
+            }
             let lobby_entry_info = &chunk[0];
             let locked_waln_info = &chunk[1];
+            let core_asset_info = &chunk[2];
 
-            let mut lobby_entry: Account<LobbyEntry> = Account::try_from(lobby_entry_info)?;
+            let mut lobby_entry: Account<LobbyEntry> =
+                match Account::try_from(lobby_entry_info) {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
 
             let expected_lobby_pda = Pubkey::create_program_address(
                 &[LOBBY_ENTRY_SEED, lobby_entry.investor.as_ref(), &[lobby_entry.bump]],
                 &crate::ID,
-            ).map_err(|_| error!(FloorError::InvalidRemainingAccounts))?;
-            require!(expected_lobby_pda == lobby_entry_info.key(), FloorError::InvalidRemainingAccounts);
+            )
+            .map_err(|_| error!(FloorError::InvalidRemainingAccounts))?;
+            require!(
+                expected_lobby_pda == lobby_entry_info.key(),
+                FloorError::InvalidRemainingAccounts
+            );
 
             if lobby_entry.usdc_locked_current_round == 0 {
                 continue;
             }
+
+            let investor = lobby_entry.investor;
+
+            // Verify the Core Asset still belongs to the investor and get allocation weight.
+            let alloc = match verify_aat_nft_and_get_allocation(
+                core_asset_info,
+                &investor,
+            ) {
+                Ok(a) => a,
+                Err(_) => 0,
+            };
+            total_waln_allocation_at_trigger = total_waln_allocation_at_trigger
+                .checked_add(alloc)
+                .ok_or(FloorError::ArithmeticOverflow)?;
 
             let usdc_locked = lobby_entry.usdc_locked_current_round;
             let waln_alloc = usdc_locked
@@ -234,8 +263,6 @@ pub fn handler<'info>(
                 .waln_purchased_total
                 .checked_add(waln_alloc)
                 .ok_or(FloorError::ArithmeticOverflow)?;
-
-            let investor = lobby_entry.investor;
 
             let (locked_waln_pda, locked_waln_bump) = Pubkey::find_program_address(
                 &[
@@ -340,7 +367,7 @@ pub fn handler<'info>(
                 triggered_at: clock.unix_timestamp,
                 waln_purchased: total_waln_purchased,
                 usdc_spent: total_usdc_spent,
-                total_aat_staked_at_trigger: total_aat,
+                total_waln_allocation_at_trigger,
                 participant_count,
                 bump: round_record_bump,
             };
@@ -360,14 +387,14 @@ pub fn handler<'info>(
             .ok_or(FloorError::ArithmeticOverflow)?;
         state.round_started = false;
 
-        if total_aat > 0 {
-            execute_round_start(
-                investor_pairs,
-                2,
-                total_aat,
-                round_size_waln_val,
-                floor_price_usdc_val,
-            )?;
+        // Immediately start next round if eligible investors remain.
+        if execute_round_start(
+            investor_triplets,
+            round_size_waln_val,
+            floor_price_usdc_val,
+        )
+        .is_ok()
+        {
             state.round_started = true;
         }
     }
