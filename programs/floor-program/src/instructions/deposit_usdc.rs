@@ -28,8 +28,8 @@ pub struct DepositUsdc<'info> {
     )]
     pub lobby_entry: Account<'info, LobbyEntry>,
 
-    pub usdc_mint: InterfaceAccount<'info, Mint>,
-    pub aat_mint: InterfaceAccount<'info, Mint>,
+    pub usdc_mint: Box<InterfaceAccount<'info, Mint>>,
+    pub aat_mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
         mut,
@@ -37,7 +37,7 @@ pub struct DepositUsdc<'info> {
         token::authority = investor,
         token::token_program = usdc_token_program,
     )]
-    pub investor_usdc_account: InterfaceAccount<'info, TokenAccount>,
+    pub investor_usdc_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -47,7 +47,7 @@ pub struct DepositUsdc<'info> {
         token::authority = contract_state,
         token::token_program = usdc_token_program,
     )]
-    pub usdc_vault: InterfaceAccount<'info, TokenAccount>,
+    pub usdc_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -55,7 +55,7 @@ pub struct DepositUsdc<'info> {
         token::authority = investor,
         token::token_program = aat_token_program,
     )]
-    pub investor_aat_account: InterfaceAccount<'info, TokenAccount>,
+    pub investor_aat_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -65,7 +65,7 @@ pub struct DepositUsdc<'info> {
         token::authority = contract_state,
         token::token_program = aat_token_program,
     )]
-    pub aat_vault: InterfaceAccount<'info, TokenAccount>,
+    pub aat_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     pub usdc_token_program: Interface<'info, TokenInterface>,
     pub aat_token_program: Interface<'info, TokenInterface>,

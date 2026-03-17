@@ -21,8 +21,8 @@ pub struct SellWaln<'info> {
     )]
     pub contract_state: Account<'info, ProgramState>,
 
-    pub waln_mint: InterfaceAccount<'info, Mint>,
-    pub usdc_mint: InterfaceAccount<'info, Mint>,
+    pub waln_mint: Box<InterfaceAccount<'info, Mint>>,
+    pub usdc_mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
         mut,
@@ -30,7 +30,7 @@ pub struct SellWaln<'info> {
         token::authority = seller,
         token::token_program = waln_token_program,
     )]
-    pub seller_waln_account: InterfaceAccount<'info, TokenAccount>,
+    pub seller_waln_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -38,7 +38,7 @@ pub struct SellWaln<'info> {
         token::authority = seller,
         token::token_program = usdc_token_program,
     )]
-    pub seller_usdc_account: InterfaceAccount<'info, TokenAccount>,
+    pub seller_usdc_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -48,7 +48,7 @@ pub struct SellWaln<'info> {
         token::authority = contract_state,
         token::token_program = waln_token_program,
     )]
-    pub waln_vault: InterfaceAccount<'info, TokenAccount>,
+    pub waln_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -58,7 +58,7 @@ pub struct SellWaln<'info> {
         token::authority = contract_state,
         token::token_program = usdc_token_program,
     )]
-    pub usdc_vault: InterfaceAccount<'info, TokenAccount>,
+    pub usdc_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     pub waln_token_program: Interface<'info, TokenInterface>,
     pub usdc_token_program: Interface<'info, TokenInterface>,
