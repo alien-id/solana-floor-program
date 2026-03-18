@@ -9,7 +9,7 @@ use crate::state::LobbyEntry;
 /// Executes Round Start over a slice of investor triplets
 /// (LobbyEntry, LockedWaln placeholder, Core/Token-2022 mint Asset).
 ///
-/// Returns the total waln_allocation summed across all eligible investors,
+/// Returns the total aat_volume summed across all eligible investors,
 /// for use in the RoundRecord.
 pub fn execute_round_start<'info>(
     triplets: &'info [AccountInfo<'info>],
@@ -24,9 +24,9 @@ pub fn execute_round_start<'info>(
         .checked_div(waln_scale)
         .ok_or(FloorError::ArithmeticOverflow)?;
 
-    // Pass 1: compute total_waln_allocation across all eligible investors.
+    // Pass 1: compute total_aat_volume across all eligible investors.
     // Each investor must appear exactly once; duplicate triplets are rejected.
-    let mut total_waln_allocation: u64 = 0;
+    let mut total_aat_volume: u64 = 0;
     let mut seen_investors: BTreeSet<Pubkey> = BTreeSet::new();
     let mut i = 0;
     while i + 2 < triplets.len() {
@@ -66,12 +66,12 @@ pub fn execute_round_start<'info>(
             _ => continue,
         };
 
-        total_waln_allocation = total_waln_allocation
+        total_aat_volume = total_aat_volume
             .checked_add(alloc)
             .ok_or(FloorError::ArithmeticOverflow)?;
     }
 
-    require!(total_waln_allocation > 0, FloorError::NoEligibleInvestors);
+    require!(total_aat_volume > 0, FloorError::NoEligibleInvestors);
 
     // Pass 2: compute and persist usdc_locked_current_round for each eligible investor.
     let mut i = 0;
@@ -110,7 +110,7 @@ pub fn execute_round_start<'info>(
         let usdc_locked_u128 = round_cap_usdc
             .checked_mul(alloc as u128)
             .ok_or(FloorError::ArithmeticOverflow)?
-            .checked_div(total_waln_allocation as u128)
+            .checked_div(total_aat_volume as u128)
             .ok_or(FloorError::ArithmeticOverflow)?;
 
         let usdc_locked = usdc_locked_u128.min(lobby_entry.usdc_deposited as u128) as u64;
@@ -129,5 +129,5 @@ pub fn execute_round_start<'info>(
         lobby_entry.exit(&crate::ID)?;
     }
 
-    Ok(total_waln_allocation)
+    Ok(total_aat_volume)
 }

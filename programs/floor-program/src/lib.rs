@@ -55,7 +55,7 @@ pub mod floor_program {
         instructions::claim_waln::handler(ctx, round_index)
     }
 
-    pub fn mint_aat_nft(ctx: Context<MintAatNft>, waln_allocation: u64) -> Result<()> {
-        instructions::mint_aat_nft::handler(ctx, waln_allocation)
+    pub fn mint_aat_nft(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
+        instructions::mint_aat_nft::handler(ctx, aat_volume)
     }
 }

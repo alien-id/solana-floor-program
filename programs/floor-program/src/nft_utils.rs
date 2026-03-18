@@ -7,7 +7,7 @@ use crate::errors::FloorError;
 use crate::seeds::AAT_NFT_SEED;
 
 /// Verifies that `aat_nft_mint_info` is the deterministic PDA mint for `investor`
-/// (owned by Token-2022), then returns the `waln_allocation` value from its
+/// (owned by Token-2022), then returns the `aat_volume` value from its
 /// TokenMetadata additional_metadata field.
 pub fn verify_aat_nft_and_get_allocation(
     aat_nft_mint_info: &AccountInfo,
@@ -33,7 +33,7 @@ pub fn verify_aat_nft_and_get_allocation(
         .map_err(|_| error!(FloorError::InvalidAatNft))?;
 
     for (key, value) in &metadata.additional_metadata {
-        if key == "waln_allocation" {
+        if key == "aat_volume" {
             return value
                 .parse::<u64>()
                 .map_err(|_| error!(FloorError::InvalidAatNft));

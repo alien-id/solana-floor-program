@@ -21,7 +21,7 @@ pub struct ProgramState {
     pub bump: u8,
     pub usdc_vault_bump: u8,
     pub waln_vault_bump: u8,
-    pub total_waln_allocation: u64,
+    pub total_aat_volume: u64,
     pub waln_decimals: u8,
     pub usdc_decimals: u8,
 }
@@ -58,7 +58,7 @@ pub struct RoundRecord {
     pub triggered_at: i64,
     pub waln_purchased: u64,
     pub usdc_spent: u64,
-    pub total_waln_allocation_at_trigger: u64,
+    pub total_aat_volume_at_trigger: u64,
     pub participant_count: u32,
     pub bump: u8,
 }

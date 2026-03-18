@@ -23,8 +23,8 @@ import {
 // round_size  = 100_000_000_000:  100 wALN (smallest units) per round
 // round cap USDC = 100e9 * 50e6 / 1e9 = 5_000_000_000 (5 000 USDC)
 //
-// Investor1: 5_000_000_000 USDC, waln_allocation=100 → share = 100/150
-// Investor2: 5_000_000_000 USDC, waln_allocation=50  → share =  50/150
+// Investor1: 5_000_000_000 USDC, aat_volume=10000 → share = 10000/15000
+// Investor2: 5_000_000_000 USDC, aat_volume=5000  → share =  5000/15000
 //
 // After Round Start (integer arithmetic):
 //   Investor1 locked = floor(5e9 * 100/150) = 3_333_333_333  deposited = 1_666_666_667
@@ -173,7 +173,7 @@ describe("floor-program", () => {
         await sdk.mintAatNftIx({
           admin: admin.publicKey,
           investor: investor1.publicKey,
-          walnAllocation: new BN(10000), // 10%
+          aatVolume: new BN(10000),
         })
       )
     );
@@ -184,7 +184,7 @@ describe("floor-program", () => {
         await sdk.mintAatNftIx({
           admin: admin.publicKey,
           investor: investor2.publicKey,
-          walnAllocation: new BN(5000), // 5%
+          aatVolume: new BN(5000),
         })
       )
     );
@@ -272,15 +272,15 @@ describe("floor-program", () => {
   // 1c. AAT NFT allocation limit
   // ---------------------------------------------------------------------------
   describe("AAT NFT allocation limit", () => {
-    it("tracks total_waln_allocation after minting NFTs", async () => {
+    it("tracks total_aat_volume after minting NFTs", async () => {
       const state = await sdk.program.account.programState.fetch(contractState);
       assert.ok(
-        state.totalWalnAllocation.eqn(15000),
-        `expected totalWalnAllocation=15000, got ${state.totalWalnAllocation}`
+        state.totalAatVolume.eqn(15000),
+        `expected totalAatVolume=15000, got ${state.totalAatVolume}`
       );
     });
 
-    it("rejects mint when total would exceed 100_000", async () => {
+    it("rejects mint when total would exceed 1_000_000", async () => {
       const investor3 = Keypair.generate();
       const sig = await provider.connection.requestAirdrop(
         investor3.publicKey,
@@ -295,7 +295,7 @@ describe("floor-program", () => {
             await sdk.mintAatNftIx({
               admin: admin.publicKey,
               investor: investor3.publicKey,
-              walnAllocation: new BN(99_851),
+              aatVolume: new BN(999_851),
             })
           )
         );
@@ -303,14 +303,14 @@ describe("floor-program", () => {
       } catch (e: any) {
         assert.ok(
           e.toString().includes("WalnAllocationLimitExceeded") ||
-            e.toString().includes("100,000") ||
+            e.toString().includes("1,000,000") ||
             e.toString().includes("6017"),
           `expected WalnAllocationLimitExceeded error, got: ${e.toString()}`
         );
       }
     });
 
-    it("allows mint when total stays within 100_000", async () => {
+    it("allows mint when total stays within 1_000_000", async () => {
       const investor4 = Keypair.generate();
       const sig = await provider.connection.requestAirdrop(
         investor4.publicKey,
@@ -324,19 +324,19 @@ describe("floor-program", () => {
           await sdk.mintAatNftIx({
             admin: admin.publicKey,
             investor: investor4.publicKey,
-            walnAllocation: new BN(85000),
+            aatVolume: new BN(985_000),
           })
         )
       );
 
       const state = await sdk.program.account.programState.fetch(contractState);
       assert.ok(
-        state.totalWalnAllocation.eqn(100_000),
-        `expected totalWalnAllocation=100_000, got ${state.totalWalnAllocation}`
+        state.totalAatVolume.eqn(1_000_000),
+        `expected totalAatVolume=1_000_000, got ${state.totalAatVolume}`
       );
     });
 
-    it("rejects mint when total is already at 100_000", async () => {
+    it("rejects mint when total is already at 1_000_000", async () => {
       const investor5 = Keypair.generate();
       const sig = await provider.connection.requestAirdrop(
         investor5.publicKey,
@@ -351,7 +351,7 @@ describe("floor-program", () => {
             await sdk.mintAatNftIx({
               admin: admin.publicKey,
               investor: investor5.publicKey,
-              walnAllocation: new BN(1),
+              aatVolume: new BN(1),
             })
           )
         );
@@ -359,7 +359,7 @@ describe("floor-program", () => {
       } catch (e: any) {
         assert.ok(
           e.toString().includes("WalnAllocationLimitExceeded") ||
-            e.toString().includes("100,000") ||
+            e.toString().includes("1,000,000") ||
             e.toString().includes("6017"),
           `expected WalnAllocationLimitExceeded error, got: ${e.toString()}`
         );
@@ -931,7 +931,7 @@ describe("floor-program", () => {
       // RoundRecord is created via raw CPI so it's not in the IDL accounts list.
       // Decode the account data manually: skip 8-byte discriminator, then
       // RoundRecord fields in order (all LE): round_index(u64), triggered_at(i64),
-      // waln_purchased(u64), usdc_spent(u64), total_waln_allocation_at_trigger(u64),
+      // waln_purchased(u64), usdc_spent(u64), total_aat_volume_at_trigger(u64),
       // participant_count(u32), bump(u8).
       const rrInfo = await provider.connection.getAccountInfo(roundRecord0);
       assert.ok(rrInfo, "RoundRecord account should exist");

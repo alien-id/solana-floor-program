@@ -53,14 +53,14 @@ pub struct MintAatNft<'info> {
     pub associated_token_program: Program<'info, AssociatedToken>,
 }
 
-const MAX_TOTAL_WALN_ALLOCATION: u64 = 100_000;
+const MAX_TOTAL_AAT_VOLUME: u64 = 1_000_000;
 
-pub fn handler(ctx: Context<MintAatNft>, waln_allocation: u64) -> Result<()> {
-    let new_total = ctx.accounts.contract_state.total_waln_allocation
-        .checked_add(waln_allocation)
+pub fn handler(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
+    let new_total = ctx.accounts.contract_state.total_aat_volume
+        .checked_add(aat_volume)
         .ok_or(FloorError::ArithmeticOverflow)?;
     require!(
-        new_total <= MAX_TOTAL_WALN_ALLOCATION,
+        new_total <= MAX_TOTAL_AAT_VOLUME,
         FloorError::WalnAllocationLimitExceeded
     );
 
@@ -160,8 +160,8 @@ pub fn handler(ctx: Context<MintAatNft>, waln_allocation: u64) -> Result<()> {
             &spl_token_2022::id(),
             ctx.accounts.mint.key,
             ctx.accounts.nft_authority.to_account_info().key,
-            spl_token_metadata_interface::state::Field::Key("waln_allocation".to_string()),
-            waln_allocation.to_string()
+            spl_token_metadata_interface::state::Field::Key("aat_volume".to_string()),
+            aat_volume.to_string()
         ),
         &[
             ctx.accounts.mint.to_account_info().clone(),
@@ -210,7 +210,7 @@ pub fn handler(ctx: Context<MintAatNft>, waln_allocation: u64) -> Result<()> {
         None
     )?;
 
-    ctx.accounts.contract_state.total_waln_allocation = new_total;
+    ctx.accounts.contract_state.total_aat_volume = new_total;
 
     Ok(())
 }

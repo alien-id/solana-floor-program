@@ -137,7 +137,7 @@ export class FloorSdk {
   async mintAatNftIx(args: {
     admin: PublicKey;
     investor: PublicKey;
-    walnAllocation: BN;
+    aatVolume: BN;
   }): Promise<TransactionInstruction> {
     const [contractState] = this.contractStatePda();
     const [nftAuthority] = this.nftAuthorityPda();
@@ -145,7 +145,7 @@ export class FloorSdk {
     const investorAatAccount = this.investorAatAccount(args.investor, mint);
 
     return this.program.methods
-      .mintAatNft(args.walnAllocation)
+      .mintAatNft(args.aatVolume)
       .accounts({
         admin: args.admin,
         mint,

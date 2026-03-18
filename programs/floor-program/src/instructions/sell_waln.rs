@@ -216,7 +216,7 @@ pub fn handler<'info>(
         let mut total_usdc_spent: u64 = 0;
         let mut total_waln_purchased: u64 = 0;
         let mut participant_count: u32 = 0;
-        let mut total_waln_allocation_at_trigger: u64 = 0;
+        let mut total_aat_volume_at_trigger: u64 = 0;
 
         for chunk in investor_triplets.chunks(3) {
             if chunk.len() < 3 {
@@ -256,7 +256,7 @@ pub fn handler<'info>(
                 Ok(a) => a,
                 Err(_) => 0,
             };
-            total_waln_allocation_at_trigger = total_waln_allocation_at_trigger
+            total_aat_volume_at_trigger = total_aat_volume_at_trigger
                 .checked_add(alloc)
                 .ok_or(FloorError::ArithmeticOverflow)?;
 
@@ -368,7 +368,7 @@ pub fn handler<'info>(
                 triggered_at: clock.unix_timestamp,
                 waln_purchased: total_waln_purchased,
                 usdc_spent: total_usdc_spent,
-                total_waln_allocation_at_trigger,
+                total_aat_volume_at_trigger,
                 participant_count,
                 bump: round_record_bump,
             };
