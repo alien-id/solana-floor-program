@@ -79,5 +79,7 @@ pub fn handler(
     state.waln_vault_bump = ctx.bumps.waln_vault;
     state.waln_decimals = ctx.accounts.waln_mint.decimals;
     state.usdc_decimals = ctx.accounts.usdc_mint.decimals;
+    state.waln_dust_carryover = 0;
+    state.total_usdc_locked_for_round = 0;
     Ok(())
 }

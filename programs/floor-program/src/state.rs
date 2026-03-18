@@ -24,6 +24,8 @@ pub struct ProgramState {
     pub total_aat_volume: u64,
     pub waln_decimals: u8,
     pub usdc_decimals: u8,
+    pub waln_dust_carryover: u64,
+    pub total_usdc_locked_for_round: u64,
 }
 
 #[account]

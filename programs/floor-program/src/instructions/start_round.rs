@@ -9,14 +9,13 @@ use crate::state::LobbyEntry;
 /// Executes Round Start over a slice of investor triplets
 /// (LobbyEntry, LockedWaln placeholder, Core/Token-2022 mint Asset).
 ///
-/// Returns the total aat_volume summed across all eligible investors,
-/// for use in the RoundRecord.
+/// Returns (total_aat_volume, total_usdc_locked) summed across all eligible investors.
 pub fn execute_round_start<'info>(
     triplets: &'info [AccountInfo<'info>],
     round_size_waln: u64,
     floor_price_usdc: u64,
     waln_decimals: u8,
-) -> Result<u64> {
+) -> Result<(u64, u64)> {
     let waln_scale = 10_u128.pow(waln_decimals as u32);
     let round_cap_usdc = (round_size_waln as u128)
         .checked_mul(floor_price_usdc as u128)
@@ -74,6 +73,7 @@ pub fn execute_round_start<'info>(
     require!(total_aat_volume > 0, FloorError::NoEligibleInvestors);
 
     // Pass 2: compute and persist usdc_locked_current_round for each eligible investor.
+    let mut total_usdc_locked: u64 = 0;
     let mut i = 0;
     while i + 2 < triplets.len() {
         let lobby_entry_info = &triplets[i];
@@ -126,8 +126,12 @@ pub fn execute_round_start<'info>(
 
         lobby_entry.usdc_locked_current_round = usdc_locked;
 
+        total_usdc_locked = total_usdc_locked
+            .checked_add(usdc_locked)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+
         lobby_entry.exit(&crate::ID)?;
     }
 
-    Ok(total_aat_volume)
+    Ok((total_aat_volume, total_usdc_locked))
 }

@@ -19,36 +19,37 @@ import {
 // ---------------------------------------------------------------------------
 // Test parameters  (USDC = 6 decimals, wALN = 9 decimals)
 // ---------------------------------------------------------------------------
-// floor_price = 50_000_000:       50 USDC (smallest units) per 1 whole wALN
-// round_size  = 100_000_000_000:  100 wALN (smallest units) per round
-// round cap USDC = 100e9 * 50e6 / 1e9 = 5_000_000_000 (5 000 USDC)
+// floor_price = 100_000:            $0.10 USDC (smallest units) per 1 whole wALN
+// round_size  = 200_000_000_000:    200 wALN (smallest units) per round
+// round cap USDC = 200e9 * 100_000 / 1e9 = 20_000_000 (20 USDC)
 //
-// Investor1: 5_000_000_000 USDC, aat_volume=10000 → share = 10000/15000
-// Investor2: 5_000_000_000 USDC, aat_volume=5000  → share =  5000/15000
+// Investor1: 5_000_000_000 USDC, aat_volume=100000 → share = 100000/150000
+// Investor2: 5_000_000_000 USDC, aat_volume=50000  → share =  50000/150000
 //
 // After Round Start (integer arithmetic):
-//   Investor1 locked = floor(5e9 * 100/150) = 3_333_333_333  deposited = 1_666_666_667
-//   Investor2 locked = floor(5e9 *  50/150) = 1_666_666_666  deposited = 3_333_333_334
+//   round_usdc_cap = 200e9 * 100_000 / 1e9 = 20_000_000
+//   Investor1 locked = min(5e9, floor(20e6 * 100000/150000)) = 13_333_333  deposited = 4_986_666_667
+//   Investor2 locked = min(5e9, floor(20e6 *  50000/150000)) =  6_666_666  deposited = 4_993_333_334
 //
-// After round trigger (sell 100 wALN):
-//   seller receives 100e9 * 50e6 / 1e9 = 5_000_000_000 USDC
-//   Investor1 wALN = 3_333_333_333 * 1e9 / 50e6 = 66_666_666_660
-//   Investor2 wALN = 1_666_666_666 * 1e9 / 50e6 = 33_333_333_320
+// After round trigger (sell 200 wALN):
+//   seller receives 200e9 * 100_000 / 1e9 = 20_000_000 USDC
+//   Investor1 wALN = 13_333_333 * 1e9 / 100_000 = 133_333_330_000
+//   Investor2 wALN =  6_666_666 * 1e9 / 100_000 =  66_666_660_000
 
 const USDC_DECIMALS = 6;
 const WALN_DECIMALS = 9;
 const USDC_UNIT = 10 ** USDC_DECIMALS;
 const WALN_UNIT = 10 ** WALN_DECIMALS;
 
-const FLOOR_PRICE = new BN(50 * USDC_UNIT);
-const ROUND_SIZE = new BN(100 * WALN_UNIT);
+const FLOOR_PRICE = new BN(100_000);
+const ROUND_SIZE = new BN(200 * WALN_UNIT);
 const LOCK_PERIOD = new BN(0);
 
 const INVESTOR1_USDC = new BN(5_000 * USDC_UNIT);
 const INVESTOR2_USDC = new BN(5_000 * USDC_UNIT);
 
-const SELL_AMOUNT_PARTIAL = new BN(50 * WALN_UNIT);
-const SELL_AMOUNT_TRIGGER = new BN(50 * WALN_UNIT);
+const SELL_AMOUNT_PARTIAL = new BN(100 * WALN_UNIT);
+const SELL_AMOUNT_TRIGGER = new BN(100 * WALN_UNIT);
 
 describe("floor-program", () => {
   const provider = anchor.AnchorProvider.env();
@@ -173,7 +174,7 @@ describe("floor-program", () => {
         await sdk.mintAatNftIx({
           admin: admin.publicKey,
           investor: investor1.publicKey,
-          aatVolume: new BN(10000),
+          aatVolume: new BN(100000),
         })
       )
     );
@@ -184,7 +185,7 @@ describe("floor-program", () => {
         await sdk.mintAatNftIx({
           admin: admin.publicKey,
           investor: investor2.publicKey,
-          aatVolume: new BN(5000),
+          aatVolume: new BN(50000),
         })
       )
     );
@@ -275,8 +276,8 @@ describe("floor-program", () => {
     it("tracks total_aat_volume after minting NFTs", async () => {
       const state = await sdk.program.account.programState.fetch(contractState);
       assert.ok(
-        state.totalAatVolume.eqn(15000),
-        `expected totalAatVolume=15000, got ${state.totalAatVolume}`
+        state.totalAatVolume.eqn(150000),
+        `expected totalAatVolume=150000, got ${state.totalAatVolume}`
       );
     });
 
@@ -295,7 +296,7 @@ describe("floor-program", () => {
             await sdk.mintAatNftIx({
               admin: admin.publicKey,
               investor: investor3.publicKey,
-              aatVolume: new BN(999_851),
+              aatVolume: new BN(850_001),
             })
           )
         );
@@ -324,7 +325,7 @@ describe("floor-program", () => {
           await sdk.mintAatNftIx({
             admin: admin.publicKey,
             investor: investor4.publicKey,
-            aatVolume: new BN(985_000),
+            aatVolume: new BN(850_000),
           })
         )
       );
@@ -806,7 +807,7 @@ describe("floor-program", () => {
       const [lockedWaln1] = sdk.lockedWalnPda(investor1.publicKey, round0);
       const [lockedWaln2] = sdk.lockedWalnPda(investor2.publicKey, round0);
 
-      await provider.sendAndConfirm(
+      const partialSig = await provider.sendAndConfirm(
         new Transaction().add(
           await sdk.sellWalnIx({
             seller: seller.publicKey,
@@ -829,31 +830,35 @@ describe("floor-program", () => {
         [seller]
       );
 
+      await sleep(1000);
+      const partialTx = await provider.connection.getTransaction(partialSig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+      console.log(`    [CU] sell_waln PARTIAL (round-start, 2 investors): ${partialTx?.meta?.computeUnitsConsumed}`);
+
       const sellerUsdcAfter = await getTokenBalance(provider, sellerUsdcAcc);
       const walnVaultAfter = await getTokenBalance(provider, walnVault);
 
       assert.equal(
         sellerUsdcAfter - sellerUsdcBefore,
-        BigInt(2_500 * USDC_UNIT)
+        BigInt(10 * USDC_UNIT)
       );
       assert.equal(
         walnVaultAfter - walnVaultBefore,
-        BigInt(50 * WALN_UNIT)
+        BigInt(100 * WALN_UNIT)
       );
 
       const state = await sdk.program.account.programState.fetch(contractState);
       assert.ok(state.currentRoundWaln.eq(SELL_AMOUNT_PARTIAL));
       assert.equal(state.roundStarted, true);
 
-      // investor1: floor(5e9 * 100 / 100_000) = 3_333_333_333
+      // investor1: min(5e9, floor(20e6 * 100000 / 150000)) = 13_333_333
       const entry1 = await sdk.program.account.lobbyEntry.fetch(lobbyEntry1);
-      assert.ok(entry1.usdcLockedCurrentRound.eq(new BN(3_333_333_333)));
-      assert.ok(entry1.usdcDeposited.eq(new BN(1_666_666_667)));
+      assert.ok(entry1.usdcLockedCurrentRound.eq(new BN(13_333_333)));
+      assert.ok(entry1.usdcDeposited.eq(new BN(4_986_666_667)));
 
-      // investor2: floor(5e9 * 50 / 50_000) = 1_666_666_666
+      // investor2: min(5e9, floor(20e6 * 50000 / 150000)) = 6_666_666
       const entry2 = await sdk.program.account.lobbyEntry.fetch(lobbyEntry2);
-      assert.ok(entry2.usdcLockedCurrentRound.eq(new BN(1_666_666_666)));
-      assert.ok(entry2.usdcDeposited.eq(new BN(3_333_333_334)));
+      assert.ok(entry2.usdcLockedCurrentRound.eq(new BN(6_666_666)));
+      assert.ok(entry2.usdcDeposited.eq(new BN(4_993_333_334)));
     });
 
     it("rejects sell when contract is paused", async () => {
@@ -898,7 +903,7 @@ describe("floor-program", () => {
 
       const sellerUsdcBefore = await getTokenBalance(provider, sellerUsdcAcc);
 
-      await provider.sendAndConfirm(
+      const triggerSig = await provider.sendAndConfirm(
         new Transaction().add(
           await sdk.sellWalnIx({
             seller: seller.publicKey,
@@ -921,10 +926,13 @@ describe("floor-program", () => {
         [seller]
       );
 
+      const triggerTx = await provider.connection.getTransaction(triggerSig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+      console.log(`    [CU] sell_waln TRIGGER (round-end + round-start, 2 investors): ${triggerTx?.meta?.computeUnitsConsumed}`);
+
       const sellerUsdcAfter = await getTokenBalance(provider, sellerUsdcAcc);
       assert.equal(
         sellerUsdcAfter - sellerUsdcBefore,
-        BigInt(2_500 * USDC_UNIT)
+        BigInt(10 * USDC_UNIT)
       );
 
       // ---- verify RoundRecord created ----
@@ -942,9 +950,9 @@ describe("floor-program", () => {
       const rrTotalAllocation = rrBuf.readBigUInt64LE(32);
       const rrParticipantCount = rrBuf.readUInt32LE(40);
       assert.equal(rrRoundIndex, 0n);
-      assert.equal(rrWalnPurchased, 99_999_999_980n);
-      assert.equal(rrUsdcSpent, 4_999_999_999n);
-      assert.equal(rrTotalAllocation, 15000n);
+      assert.equal(rrWalnPurchased, 199_999_990_000n);
+      assert.equal(rrUsdcSpent, 19_999_999n);
+      assert.equal(rrTotalAllocation, 150000n);
       assert.equal(rrParticipantCount, 2);
 
       // ---- verify ContractState updated ----
@@ -957,27 +965,27 @@ describe("floor-program", () => {
       const lw1 = await sdk.program.account.lockedWaln.fetch(lockedWaln1);
       assert.ok(lw1.investor.equals(investor1.publicKey));
       assert.ok(lw1.roundIndex.eqn(0));
-      assert.ok(lw1.walnAmount.eq(new BN("66666666660")));
+      assert.ok(lw1.walnAmount.eq(new BN("133333330000")));
       assert.equal(lw1.claimed, false);
 
       const lw2 = await sdk.program.account.lockedWaln.fetch(lockedWaln2);
       assert.ok(lw2.investor.equals(investor2.publicKey));
       assert.ok(lw2.roundIndex.eqn(0));
-      assert.ok(lw2.walnAmount.eq(new BN("33333333320")));
+      assert.ok(lw2.walnAmount.eq(new BN("66666660000")));
       assert.equal(lw2.claimed, false);
 
       const entry1 = await sdk.program.account.lobbyEntry.fetch(lobbyEntry1);
-      assert.ok(entry1.usdcLockedCurrentRound.eq(new BN(1_666_666_667)));
-      assert.ok(entry1.usdcDeposited.eqn(0));
+      assert.ok(entry1.usdcLockedCurrentRound.eq(new BN(13_333_333)));
+      assert.ok(entry1.usdcDeposited.eq(new BN(4_973_333_334)));
 
       const entry2 = await sdk.program.account.lobbyEntry.fetch(lobbyEntry2);
-      assert.ok(entry2.usdcLockedCurrentRound.eq(new BN(1_666_666_666)));
-      assert.ok(entry2.usdcDeposited.eq(new BN(1_666_666_668)));
+      assert.ok(entry2.usdcLockedCurrentRound.eq(new BN(6_666_666)));
+      assert.ok(entry2.usdcDeposited.eq(new BN(4_986_666_668)));
 
-      assert.ok(entry1.usdcCommitted.eq(new BN(3_333_333_333)));
-      assert.ok(entry1.walnPurchasedTotal.eq(new BN("66666666660")));
-      assert.ok(entry2.usdcCommitted.eq(new BN(1_666_666_666)));
-      assert.ok(entry2.walnPurchasedTotal.eq(new BN("33333333320")));
+      assert.ok(entry1.usdcCommitted.eq(new BN(13_333_333)));
+      assert.ok(entry1.walnPurchasedTotal.eq(new BN("133333330000")));
+      assert.ok(entry2.usdcCommitted.eq(new BN(6_666_666)));
+      assert.ok(entry2.walnPurchasedTotal.eq(new BN("66666660000")));
     });
   });
 
@@ -1006,7 +1014,7 @@ describe("floor-program", () => {
       );
 
       const walnAfter = await getTokenBalance(provider, investor1WalnAcc);
-      assert.equal(walnAfter - walnBefore, 66_666_666_660n);
+      assert.equal(walnAfter - walnBefore, 133_333_330_000n);
 
       const [lockedWaln1] = sdk.lockedWalnPda(investor1.publicKey, round0);
       const lw = await sdk.program.account.lockedWaln.fetch(lockedWaln1);
@@ -1076,7 +1084,7 @@ describe("floor-program", () => {
       );
 
       const walnAfter = await getTokenBalance(provider, investor2WalnAcc);
-      assert.equal(walnAfter - walnBefore, 33_333_333_320n);
+      assert.equal(walnAfter - walnBefore, 66_666_660_000n);
     });
   });
 
@@ -1086,7 +1094,7 @@ describe("floor-program", () => {
   describe("vault integrity", () => {
     it("USDC vault balance reflects deposits minus seller payments", async () => {
       const vaultBalance = await getTokenBalance(provider, usdcVault);
-      assert.equal(vaultBalance, BigInt(5_000 * USDC_UNIT));
+      assert.equal(vaultBalance, BigInt(9_980 * USDC_UNIT));
 
       // The sum of investor positions (deposited + locked) may exceed the vault
       // balance by up to 1 USDC
@@ -1122,8 +1130,8 @@ describe("floor-program", () => {
         entry2.usdcLockedCurrentRound.toNumber();
 
       assert.ok(
-        state.totalUsdcInLobby.eq(new BN(5_000_000_001)),
-        `expected totalUsdcInLobby=5000000001, got ${state.totalUsdcInLobby.toString()}`
+        state.totalUsdcInLobby.eq(new BN(9_980_000_001)),
+        `expected totalUsdcInLobby=9980000001, got ${state.totalUsdcInLobby.toString()}`
       );
       assert.equal(
         state.totalUsdcInLobby.toNumber(),
@@ -1170,7 +1178,7 @@ describe("floor-program", () => {
 
     it("contract_state lamports are not drained when round triggers (seller pays rent)", async () => {
       // Round-1 is already started (auto-started after round-0).
-      // current_round_waln = 0, round_size = 100. Sell 100 to trigger round-1.
+      // current_round_waln = 0, round_size = 200. Sell 200 to trigger round-1.
       const round1 = new BN(1);
       const [roundRecord1] = sdk.roundRecordPda(round1);
       const [lockedWaln1r1] = sdk.lockedWalnPda(investor1.publicKey, round1);
@@ -1187,7 +1195,7 @@ describe("floor-program", () => {
             sellerUsdcAccount: sellerUsdcAcc,
             walnMint,
             usdcMint,
-            walnAmount: new BN(100 * WALN_UNIT),
+            walnAmount: new BN(200 * WALN_UNIT),
             roundTriggerAccounts: [
               { pubkey: roundRecord1, isWritable: true },
               { pubkey: lobbyEntry1, isWritable: true },
@@ -1269,7 +1277,7 @@ describe("floor-program", () => {
               sellerUsdcAccount: sellerUsdcAcc,
               walnMint,
               usdcMint,
-              walnAmount: new BN(101 * WALN_UNIT),
+              walnAmount: new BN(201 * WALN_UNIT),
               roundTriggerAccounts: [
                 { pubkey: sdk.roundRecordPda(new BN(2))[0], isWritable: true },
                 { pubkey: lobbyEntry1, isWritable: true },
@@ -1303,7 +1311,7 @@ describe("floor-program", () => {
             sellerUsdcAccount: sellerUsdcAcc,
             walnMint,
             usdcMint,
-            walnAmount: new BN(50 * WALN_UNIT),
+            walnAmount: new BN(100 * WALN_UNIT),
             roundTriggerAccounts: [
               { pubkey: sdk.roundRecordPda(new BN(2))[0], isWritable: true },
               { pubkey: lobbyEntry1, isWritable: true },
@@ -1319,7 +1327,7 @@ describe("floor-program", () => {
       );
 
       const state = await sdk.program.account.programState.fetch(contractState);
-      assert.ok(state.currentRoundWaln.eq(new BN(50 * WALN_UNIT)), "50 wALN accumulated");
+      assert.ok(state.currentRoundWaln.eq(new BN(100 * WALN_UNIT)), "100 wALN accumulated");
       assert.ok(state.roundCount.eqn(2), "round not triggered yet");
     });
 
@@ -1333,7 +1341,7 @@ describe("floor-program", () => {
               sellerUsdcAccount: sellerUsdcAcc,
               walnMint,
               usdcMint,
-              walnAmount: new BN(51 * WALN_UNIT),
+              walnAmount: new BN(101 * WALN_UNIT),
               roundTriggerAccounts: [
                 { pubkey: sdk.roundRecordPda(new BN(2))[0], isWritable: true },
                 { pubkey: lobbyEntry1, isWritable: true },
@@ -1369,7 +1377,7 @@ describe("floor-program", () => {
             sellerUsdcAccount: sellerUsdcAcc,
             walnMint,
             usdcMint,
-            walnAmount: new BN(50 * WALN_UNIT),
+            walnAmount: new BN(100 * WALN_UNIT),
             roundTriggerAccounts: [
               { pubkey: roundRecord, isWritable: true },
               { pubkey: lobbyEntry1, isWritable: true },
@@ -1440,13 +1448,13 @@ describe("floor-program", () => {
       const state = await sdk.program.account.programState.fetch(contractState);
       assert.ok(state.floorPriceUsdc.eq(new BN(100 * USDC_UNIT)), "floor_price_usdc updated to 100 USDC");
       assert.ok(
-        state.currentRoundFloorPrice.eq(new BN(50 * USDC_UNIT)),
-        `current_round_floor_price should still be 50 USDC, got ${state.currentRoundFloorPrice.toString()}`
+        state.currentRoundFloorPrice.eq(new BN(100_000)),
+        `current_round_floor_price should still be $0.10, got ${state.currentRoundFloorPrice.toString()}`
       );
       assert.equal(state.roundStarted, true, "round 3 is active");
     });
 
-    it("seller receives USDC at snapshotted price (50 USDC), not updated price (100 USDC)", async () => {
+    it("seller receives USDC at snapshotted price ($0.10), not updated price (100 USDC)", async () => {
       const sellerUsdcBefore = await getTokenBalance(provider, sellerUsdcAcc);
 
       await provider.sendAndConfirm(
@@ -1457,7 +1465,7 @@ describe("floor-program", () => {
             sellerUsdcAccount: sellerUsdcAcc,
             walnMint,
             usdcMint,
-            walnAmount: new BN(50 * WALN_UNIT),
+            walnAmount: new BN(100 * WALN_UNIT),
           })
         ),
         [seller]
@@ -1467,133 +1475,14 @@ describe("floor-program", () => {
       const usdcReceived = sellerUsdcAfter - sellerUsdcBefore;
       assert.equal(
         usdcReceived,
-        BigInt(2_500 * USDC_UNIT),
-        `seller should receive 2500 USDC at snapshotted price 50, got ${usdcReceived}`
+        BigInt(10 * USDC_UNIT),
+        `seller should receive 10 USDC at snapshotted price $0.10, got ${usdcReceived}`
       );
     });
 
     it("next round uses new floor price (100 USDC) after current round triggers", async () => {
       const stateBefore = await sdk.program.account.programState.fetch(contractState);
       const roundIndex = stateBefore.roundCount; // 3
-      const roundBn = new BN(roundIndex.toNumber());
-      const [roundRecord] = sdk.roundRecordPda(roundBn);
-      const [lockedWaln1] = sdk.lockedWalnPda(investor1.publicKey, roundBn);
-      const [lockedWaln2] = sdk.lockedWalnPda(investor2.publicKey, roundBn);
-
-      await provider.sendAndConfirm(
-        new Transaction().add(
-          ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
-          await sdk.sellWalnIx({
-            seller: seller.publicKey,
-            sellerWalnAccount: sellerWalnAcc,
-            sellerUsdcAccount: sellerUsdcAcc,
-            walnMint,
-            usdcMint,
-            walnAmount: new BN(50 * WALN_UNIT),
-            roundTriggerAccounts: [
-              { pubkey: roundRecord, isWritable: true },
-              { pubkey: lobbyEntry1, isWritable: true },
-              { pubkey: lockedWaln1, isWritable: true },
-              { pubkey: investor1NftPubkey, isWritable: false },
-              { pubkey: lobbyEntry2, isWritable: true },
-              { pubkey: lockedWaln2, isWritable: true },
-              { pubkey: investor2NftPubkey, isWritable: false },
-            ],
-          })
-        ),
-        [seller]
-      );
-
-      const stateAfter = await sdk.program.account.programState.fetch(contractState);
-      assert.ok(
-        stateAfter.roundCount.eqn(roundIndex.toNumber() + 1),
-        "round_count should have incremented"
-      );
-      assert.ok(
-        stateAfter.currentRoundFloorPrice.eq(new BN(100 * USDC_UNIT)),
-        `new round must use updated floor price 100 USDC, got ${stateAfter.currentRoundFloorPrice.toString()}`
-      );
-      assert.equal(stateAfter.roundStarted, true, "next round auto-started with new price");
-      assert.ok(
-        stateAfter.currentRoundSizeWaln.eq(new BN(100 * WALN_UNIT)),
-        `current_round_size_waln should still be 100 wALN for new round, got ${stateAfter.currentRoundSizeWaln.toString()}`
-      );
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // 13. Round-size isolation — set_round_size applies to next round only
-  // ---------------------------------------------------------------------------
-  describe("round-size isolation — set_round_size applies to next round only", () => {
-    before(async () => {
-      await provider.sendAndConfirm(
-        new Transaction().add(
-          await sdk.admin(admin.publicKey).setRoundSize(new BN(200 * WALN_UNIT))
-        )
-      );
-
-      await mintTokensTo(provider, usdcMint, investor1UsdcAcc, BigInt(50_000 * USDC_UNIT));
-      await mintTokensTo(provider, usdcMint, investor2UsdcAcc, BigInt(50_000 * USDC_UNIT));
-      await provider.sendAndConfirm(
-        new Transaction().add(
-          await sdk.depositUsdcIx({
-            investor: investor1.publicKey,
-            investorUsdcAccount: investor1UsdcAcc,
-            usdcMint,
-            aatNft: investor1NftPubkey,
-            usdcAmount: new BN(20_000 * USDC_UNIT),
-          })
-        ),
-        [investor1]
-      );
-      await provider.sendAndConfirm(
-        new Transaction().add(
-          await sdk.depositUsdcIx({
-            investor: investor2.publicKey,
-            investorUsdcAccount: investor2UsdcAcc,
-            usdcMint,
-            aatNft: investor2NftPubkey,
-            usdcAmount: new BN(20_000 * USDC_UNIT),
-          })
-        ),
-        [investor2]
-      );
-    });
-
-    it("current_round_size_waln is not changed by set_round_size mid-round", async () => {
-      const state = await sdk.program.account.programState.fetch(contractState);
-      assert.ok(state.roundSizeWaln.eq(new BN(200 * WALN_UNIT)), "round_size_waln updated to 200 wALN");
-      assert.ok(
-        state.currentRoundSizeWaln.eq(new BN(100 * WALN_UNIT)),
-        `current_round_size_waln should still be 100 wALN, got ${state.currentRoundSizeWaln.toString()}`
-      );
-      assert.equal(state.roundStarted, true, "round 4 is active");
-    });
-
-    it("rejects sell exceeding snapshotted round size (100 wALN) even though live size is 200 wALN", async () => {
-      try {
-        await provider.sendAndConfirm(
-          new Transaction().add(
-            await sdk.sellWalnIx({
-              seller: seller.publicKey,
-              sellerWalnAccount: sellerWalnAcc,
-              sellerUsdcAccount: sellerUsdcAcc,
-              walnMint,
-              usdcMint,
-              walnAmount: new BN(101 * WALN_UNIT),
-            })
-          ),
-          [seller]
-        );
-        assert.fail("should have thrown SellAmountExceedsRound");
-      } catch (e: any) {
-        assert.include(e.toString(), "SellAmountExceedsRound");
-      }
-    });
-
-    it("next round uses new round size (200 wALN) after current round triggers", async () => {
-      const stateBefore = await sdk.program.account.programState.fetch(contractState);
-      const roundIndex = stateBefore.roundCount; // 4
       const roundBn = new BN(roundIndex.toNumber());
       const [roundRecord] = sdk.roundRecordPda(roundBn);
       const [lockedWaln1] = sdk.lockedWalnPda(investor1.publicKey, roundBn);
@@ -1629,10 +1518,312 @@ describe("floor-program", () => {
         "round_count should have incremented"
       );
       assert.ok(
+        stateAfter.currentRoundFloorPrice.eq(new BN(100 * USDC_UNIT)),
+        `new round must use updated floor price 100 USDC, got ${stateAfter.currentRoundFloorPrice.toString()}`
+      );
+      assert.equal(stateAfter.roundStarted, true, "next round auto-started with new price");
+      assert.ok(
         stateAfter.currentRoundSizeWaln.eq(new BN(200 * WALN_UNIT)),
-        `new round must use updated round size 200 wALN, got ${stateAfter.currentRoundSizeWaln.toString()}`
+        `current_round_size_waln should still be 200 wALN for new round, got ${stateAfter.currentRoundSizeWaln.toString()}`
+      );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 13. Round-size isolation — set_round_size applies to next round only
+  // ---------------------------------------------------------------------------
+  describe("round-size isolation — set_round_size applies to next round only", () => {
+    before(async () => {
+      await provider.sendAndConfirm(
+        new Transaction().add(
+          await sdk.admin(admin.publicKey).setRoundSize(new BN(400 * WALN_UNIT))
+        )
+      );
+
+      await mintTokensTo(provider, walnMint, sellerWalnAcc, BigInt(200 * WALN_UNIT));
+      await mintTokensTo(provider, usdcMint, investor1UsdcAcc, BigInt(50_000 * USDC_UNIT));
+      await mintTokensTo(provider, usdcMint, investor2UsdcAcc, BigInt(50_000 * USDC_UNIT));
+      await provider.sendAndConfirm(
+        new Transaction().add(
+          await sdk.depositUsdcIx({
+            investor: investor1.publicKey,
+            investorUsdcAccount: investor1UsdcAcc,
+            usdcMint,
+            aatNft: investor1NftPubkey,
+            usdcAmount: new BN(20_000 * USDC_UNIT),
+          })
+        ),
+        [investor1]
+      );
+      await provider.sendAndConfirm(
+        new Transaction().add(
+          await sdk.depositUsdcIx({
+            investor: investor2.publicKey,
+            investorUsdcAccount: investor2UsdcAcc,
+            usdcMint,
+            aatNft: investor2NftPubkey,
+            usdcAmount: new BN(20_000 * USDC_UNIT),
+          })
+        ),
+        [investor2]
+      );
+    });
+
+    it("current_round_size_waln is not changed by set_round_size mid-round", async () => {
+      const state = await sdk.program.account.programState.fetch(contractState);
+      assert.ok(state.roundSizeWaln.eq(new BN(400 * WALN_UNIT)), "round_size_waln updated to 400 wALN");
+      assert.ok(
+        state.currentRoundSizeWaln.eq(new BN(200 * WALN_UNIT)),
+        `current_round_size_waln should still be 200 wALN, got ${state.currentRoundSizeWaln.toString()}`
+      );
+      assert.equal(state.roundStarted, true, "round 4 is active");
+    });
+
+    it("rejects sell exceeding snapshotted round size (200 wALN) even though live size is 400 wALN", async () => {
+      try {
+        await provider.sendAndConfirm(
+          new Transaction().add(
+            await sdk.sellWalnIx({
+              seller: seller.publicKey,
+              sellerWalnAccount: sellerWalnAcc,
+              sellerUsdcAccount: sellerUsdcAcc,
+              walnMint,
+              usdcMint,
+              walnAmount: new BN(201 * WALN_UNIT),
+            })
+          ),
+          [seller]
+        );
+        assert.fail("should have thrown SellAmountExceedsRound");
+      } catch (e: any) {
+        assert.include(e.toString(), "SellAmountExceedsRound");
+      }
+    });
+
+    it("next round uses new round size (400 wALN) after current round triggers", async () => {
+      const stateBefore = await sdk.program.account.programState.fetch(contractState);
+      const roundIndex = stateBefore.roundCount; // 4
+      const roundBn = new BN(roundIndex.toNumber());
+      const [roundRecord] = sdk.roundRecordPda(roundBn);
+      const [lockedWaln1] = sdk.lockedWalnPda(investor1.publicKey, roundBn);
+      const [lockedWaln2] = sdk.lockedWalnPda(investor2.publicKey, roundBn);
+
+      await provider.sendAndConfirm(
+        new Transaction().add(
+          ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+          await sdk.sellWalnIx({
+            seller: seller.publicKey,
+            sellerWalnAccount: sellerWalnAcc,
+            sellerUsdcAccount: sellerUsdcAcc,
+            walnMint,
+            usdcMint,
+            walnAmount: new BN(200 * WALN_UNIT),
+            roundTriggerAccounts: [
+              { pubkey: roundRecord, isWritable: true },
+              { pubkey: lobbyEntry1, isWritable: true },
+              { pubkey: lockedWaln1, isWritable: true },
+              { pubkey: investor1NftPubkey, isWritable: false },
+              { pubkey: lobbyEntry2, isWritable: true },
+              { pubkey: lockedWaln2, isWritable: true },
+              { pubkey: investor2NftPubkey, isWritable: false },
+            ],
+          })
+        ),
+        [seller]
+      );
+
+      const stateAfter = await sdk.program.account.programState.fetch(contractState);
+      assert.ok(
+        stateAfter.roundCount.eqn(roundIndex.toNumber() + 1),
+        "round_count should have incremented"
+      );
+      assert.ok(
+        stateAfter.currentRoundSizeWaln.eq(new BN(400 * WALN_UNIT)),
+        `new round must use updated round size 400 wALN, got ${stateAfter.currentRoundSizeWaln.toString()}`
       );
       assert.equal(stateAfter.roundStarted, true, "next round auto-started with new round size");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 14. WALN dust carryover
+  // ---------------------------------------------------------------------------
+  describe("waln dust carryover", () => {
+    before(async () => {
+      await provider.sendAndConfirm(
+        new Transaction().add(
+          await sdk.admin(admin.publicKey).setFloorPrice(FLOOR_PRICE)
+        )
+      );
+      await provider.sendAndConfirm(
+        new Transaction().add(
+          await sdk.admin(admin.publicKey).setRoundSize(ROUND_SIZE)
+        )
+      );
+
+      await mintTokensTo(provider, walnMint, sellerWalnAcc, BigInt(1000 * WALN_UNIT));
+      await mintTokensTo(provider, usdcMint, investor1UsdcAcc, BigInt(100_000 * USDC_UNIT));
+      await mintTokensTo(provider, usdcMint, investor2UsdcAcc, BigInt(100_000 * USDC_UNIT));
+      await provider.sendAndConfirm(
+        new Transaction().add(
+          await sdk.depositUsdcIx({
+            investor: investor1.publicKey,
+            investorUsdcAccount: investor1UsdcAcc,
+            usdcMint,
+            aatNft: investor1NftPubkey,
+            usdcAmount: new BN(50_000 * USDC_UNIT),
+          })
+        ),
+        [investor1]
+      );
+      await provider.sendAndConfirm(
+        new Transaction().add(
+          await sdk.depositUsdcIx({
+            investor: investor2.publicKey,
+            investorUsdcAccount: investor2UsdcAcc,
+            usdcMint,
+            aatNft: investor2NftPubkey,
+            usdcAmount: new BN(50_000 * USDC_UNIT),
+          })
+        ),
+        [investor2]
+      );
+    });
+
+    it("dust invariant holds: total_purchased + new_dust = waln_in_round + old_dust", async () => {
+      const stateBefore = await sdk.program.account.programState.fetch(contractState);
+      const oldDust = BigInt(stateBefore.walnDustCarryover.toString());
+      const roundIndex = stateBefore.roundCount;
+      const roundBn = new BN(roundIndex.toNumber());
+      const [roundRecord] = sdk.roundRecordPda(roundBn);
+      const [lockedWaln1] = sdk.lockedWalnPda(investor1.publicKey, roundBn);
+      const [lockedWaln2] = sdk.lockedWalnPda(investor2.publicKey, roundBn);
+
+      const walnInRound = BigInt(stateBefore.currentRoundSizeWaln.toString());
+
+      await provider.sendAndConfirm(
+        new Transaction().add(
+          ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+          await sdk.sellWalnIx({
+            seller: seller.publicKey,
+            sellerWalnAccount: sellerWalnAcc,
+            sellerUsdcAccount: sellerUsdcAcc,
+            walnMint,
+            usdcMint,
+            walnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
+            roundTriggerAccounts: [
+              { pubkey: roundRecord, isWritable: true },
+              { pubkey: lobbyEntry1, isWritable: true },
+              { pubkey: lockedWaln1, isWritable: true },
+              { pubkey: investor1NftPubkey, isWritable: false },
+              { pubkey: lobbyEntry2, isWritable: true },
+              { pubkey: lockedWaln2, isWritable: true },
+              { pubkey: investor2NftPubkey, isWritable: false },
+            ],
+          })
+        ),
+        [seller]
+      );
+
+      const stateAfter = await sdk.program.account.programState.fetch(contractState);
+      const newDust = BigInt(stateAfter.walnDustCarryover.toString());
+
+      const rrInfo = await provider.connection.getAccountInfo(roundRecord);
+      assert.ok(rrInfo, "RoundRecord should exist");
+      const rrBuf = Buffer.from(rrInfo!.data).subarray(8);
+      const totalWalnPurchased = rrBuf.readBigUInt64LE(16);
+
+      assert.equal(
+        totalWalnPurchased + newDust,
+        walnInRound + oldDust,
+        `dust invariant failed: purchased(${totalWalnPurchased}) + newDust(${newDust}) != walnInRound(${walnInRound}) + oldDust(${oldDust})`
+      );
+    });
+
+    it("investors receive dust bonus from previous round's carryover", async () => {
+      const stateBefore = await sdk.program.account.programState.fetch(contractState);
+      const dustCarryover = BigInt(stateBefore.walnDustCarryover.toString());
+      const totalUsdcLocked = BigInt(stateBefore.totalUsdcLockedForRound.toString());
+      const floorPrice = BigInt(stateBefore.currentRoundFloorPrice.toString());
+      const walnScale = BigInt(WALN_UNIT);
+
+      assert.ok(dustCarryover > 0n, "dust carryover should be > 0 from previous rounds");
+
+      const entry1 = await sdk.program.account.lobbyEntry.fetch(lobbyEntry1);
+      const entry2 = await sdk.program.account.lobbyEntry.fetch(lobbyEntry2);
+      const locked1 = BigInt(entry1.usdcLockedCurrentRound.toString());
+      const locked2 = BigInt(entry2.usdcLockedCurrentRound.toString());
+
+      const roundIndex = stateBefore.roundCount;
+      const roundBn = new BN(roundIndex.toNumber());
+      const [roundRecord] = sdk.roundRecordPda(roundBn);
+      const [lockedWaln1] = sdk.lockedWalnPda(investor1.publicKey, roundBn);
+      const [lockedWaln2] = sdk.lockedWalnPda(investor2.publicKey, roundBn);
+
+      await provider.sendAndConfirm(
+        new Transaction().add(
+          ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+          await sdk.sellWalnIx({
+            seller: seller.publicKey,
+            sellerWalnAccount: sellerWalnAcc,
+            sellerUsdcAccount: sellerUsdcAcc,
+            walnMint,
+            usdcMint,
+            walnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
+            roundTriggerAccounts: [
+              { pubkey: roundRecord, isWritable: true },
+              { pubkey: lobbyEntry1, isWritable: true },
+              { pubkey: lockedWaln1, isWritable: true },
+              { pubkey: investor1NftPubkey, isWritable: false },
+              { pubkey: lobbyEntry2, isWritable: true },
+              { pubkey: lockedWaln2, isWritable: true },
+              { pubkey: investor2NftPubkey, isWritable: false },
+            ],
+          })
+        ),
+        [seller]
+      );
+
+      const lw1 = await sdk.program.account.lockedWaln.fetch(lockedWaln1);
+      const lw2 = await sdk.program.account.lockedWaln.fetch(lockedWaln2);
+
+      const base1 = locked1 * walnScale / floorPrice;
+      const base2 = locked2 * walnScale / floorPrice;
+      const bonus1 = totalUsdcLocked > 0n ? dustCarryover * locked1 / totalUsdcLocked : 0n;
+      const bonus2 = totalUsdcLocked > 0n ? dustCarryover * locked2 / totalUsdcLocked : 0n;
+
+      assert.equal(
+        BigInt(lw1.walnAmount.toString()),
+        base1 + bonus1,
+        "investor1 should receive base + dust bonus"
+      );
+      assert.equal(
+        BigInt(lw2.walnAmount.toString()),
+        base2 + bonus2,
+        "investor2 should receive base + dust bonus"
+      );
+
+      assert.ok(
+        BigInt(lw1.walnAmount.toString()) > base1,
+        "investor1 total should exceed base allocation due to dust"
+      );
+      assert.ok(
+        BigInt(lw2.walnAmount.toString()) > base2,
+        "investor2 total should exceed base allocation due to dust"
+      );
+
+      const stateAfter = await sdk.program.account.programState.fetch(contractState);
+      const rrInfo = await provider.connection.getAccountInfo(roundRecord);
+      const rrBuf = Buffer.from(rrInfo!.data).subarray(8);
+      const totalWalnPurchased = rrBuf.readBigUInt64LE(16);
+      const newDust = BigInt(stateAfter.walnDustCarryover.toString());
+      const walnInRound = BigInt(stateBefore.currentRoundSizeWaln.toString());
+
+      assert.equal(
+        totalWalnPurchased + newDust,
+        walnInRound + dustCarryover,
+        "dust invariant must hold for round with bonus distribution"
+      );
     });
   });
 });

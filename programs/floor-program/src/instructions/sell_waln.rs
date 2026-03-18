@@ -104,7 +104,7 @@ pub fn handler<'info>(
         let investor_triplets = &remaining[1..];
         let snapshot_price = ctx.accounts.contract_state.floor_price_usdc;
         let snapshot_size = ctx.accounts.contract_state.round_size_waln;
-        execute_round_start(
+        let (_aat_vol, usdc_locked) = execute_round_start(
             investor_triplets,
             snapshot_size,
             snapshot_price,
@@ -112,6 +112,7 @@ pub fn handler<'info>(
         )?;
         ctx.accounts.contract_state.current_round_floor_price = snapshot_price;
         ctx.accounts.contract_state.current_round_size_waln = snapshot_size;
+        ctx.accounts.contract_state.total_usdc_locked_for_round = usdc_locked;
         ctx.accounts.contract_state.round_started = true;
     }
 
@@ -195,6 +196,9 @@ pub fn handler<'info>(
         let floor_price = state.current_round_floor_price;
         let round_size_waln_val = state.round_size_waln;
         let floor_price_usdc_val = state.floor_price_usdc;
+        let dust_pool = state.waln_dust_carryover;
+        let waln_in_round = state.current_round_waln;
+        let total_usdc_locked = state.total_usdc_locked_for_round;
 
         let unlock_timestamp = clock
             .unix_timestamp
@@ -261,7 +265,7 @@ pub fn handler<'info>(
                 .ok_or(FloorError::ArithmeticOverflow)?;
 
             let usdc_locked = lobby_entry.usdc_locked_current_round;
-            let waln_alloc = u64::try_from(
+            let base_waln = u64::try_from(
                 (usdc_locked as u128)
                     .checked_mul(waln_scale)
                     .ok_or(FloorError::ArithmeticOverflow)?
@@ -269,6 +273,23 @@ pub fn handler<'info>(
                     .ok_or(FloorError::ArithmeticOverflow)?,
             )
             .map_err(|_| FloorError::ArithmeticOverflow)?;
+
+            let bonus = if total_usdc_locked > 0 && dust_pool > 0 {
+                u64::try_from(
+                    (dust_pool as u128)
+                        .checked_mul(usdc_locked as u128)
+                        .ok_or(FloorError::ArithmeticOverflow)?
+                        .checked_div(total_usdc_locked as u128)
+                        .ok_or(FloorError::ArithmeticOverflow)?,
+                )
+                .map_err(|_| FloorError::ArithmeticOverflow)?
+            } else {
+                0
+            };
+
+            let waln_alloc = base_waln
+                .checked_add(bonus)
+                .ok_or(FloorError::ArithmeticOverflow)?;
 
             lobby_entry.usdc_committed = lobby_entry
                 .usdc_committed
@@ -387,19 +408,24 @@ pub fn handler<'info>(
             .checked_sub(total_usdc_spent)
             .ok_or(FloorError::ArithmeticOverflow)?;
         state.round_started = false;
+        state.waln_dust_carryover = u64::try_from(
+            (waln_in_round as u128)
+                .checked_add(dust_pool as u128)
+                .ok_or(FloorError::ArithmeticOverflow)?
+                .checked_sub(total_waln_purchased as u128)
+                .ok_or(FloorError::ArithmeticOverflow)?,
+        )
+        .map_err(|_| FloorError::ArithmeticOverflow)?;
 
-        // Immediately start next round if eligible investors remain.
-        // Snapshot the current (possibly updated) floor_price_usdc and round_size_waln.
-        if execute_round_start(
+        if let Ok((_aat_vol, usdc_locked)) = execute_round_start(
             investor_triplets,
             round_size_waln_val,
             floor_price_usdc_val,
             waln_decimals,
-        )
-        .is_ok()
-        {
+        ) {
             state.current_round_floor_price = floor_price_usdc_val;
             state.current_round_size_waln = round_size_waln_val;
+            state.total_usdc_locked_for_round = usdc_locked;
             state.round_started = true;
         }
     }
