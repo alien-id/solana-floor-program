@@ -936,24 +936,12 @@ describe("floor-program", () => {
       );
 
       // ---- verify RoundRecord created ----
-      // RoundRecord is created via raw CPI so it's not in the IDL accounts list.
-      // Decode the account data manually: skip 8-byte discriminator, then
-      // RoundRecord fields in order (all LE): round_index(u64), triggered_at(i64),
-      // waln_purchased(u64), usdc_spent(u64), total_aat_volume_at_trigger(u64),
-      // participant_count(u32), bump(u8).
-      const rrInfo = await provider.connection.getAccountInfo(roundRecord0);
-      assert.ok(rrInfo, "RoundRecord account should exist");
-      const rrBuf = Buffer.from(rrInfo.data).subarray(8); // skip discriminator
-      const rrRoundIndex = rrBuf.readBigUInt64LE(0);
-      const rrWalnPurchased = rrBuf.readBigUInt64LE(16);
-      const rrUsdcSpent = rrBuf.readBigUInt64LE(24);
-      const rrTotalAllocation = rrBuf.readBigUInt64LE(32);
-      const rrParticipantCount = rrBuf.readUInt32LE(40);
-      assert.equal(rrRoundIndex, 0n);
-      assert.equal(rrWalnPurchased, 199_999_990_000n);
-      assert.equal(rrUsdcSpent, 19_999_999n);
-      assert.equal(rrTotalAllocation, 150000n);
-      assert.equal(rrParticipantCount, 2);
+      const rr = await sdk.fetchRoundRecord(round0);
+      assert.equal(rr.roundIndex, 0n);
+      assert.equal(rr.walnPurchased, 199_999_990_000n);
+      assert.equal(rr.usdcSpent, 19_999_999n);
+      assert.equal(rr.totalAatVolumeAtTrigger, 150000n);
+      assert.equal(rr.participantCount, 2);
 
       // ---- verify ContractState updated ----
       const state = await sdk.program.account.programState.fetch(contractState);
@@ -1728,10 +1716,8 @@ describe("floor-program", () => {
       const stateAfter = await sdk.program.account.programState.fetch(contractState);
       const newDust = BigInt(stateAfter.walnDustCarryover.toString());
 
-      const rrInfo = await provider.connection.getAccountInfo(roundRecord);
-      assert.ok(rrInfo, "RoundRecord should exist");
-      const rrBuf = Buffer.from(rrInfo!.data).subarray(8);
-      const totalWalnPurchased = rrBuf.readBigUInt64LE(16);
+      const rr = await sdk.fetchRoundRecord(roundBn);
+      const totalWalnPurchased = rr.walnPurchased;
 
       assert.equal(
         totalWalnPurchased + newDust,
@@ -1813,9 +1799,8 @@ describe("floor-program", () => {
       );
 
       const stateAfter = await sdk.program.account.programState.fetch(contractState);
-      const rrInfo = await provider.connection.getAccountInfo(roundRecord);
-      const rrBuf = Buffer.from(rrInfo!.data).subarray(8);
-      const totalWalnPurchased = rrBuf.readBigUInt64LE(16);
+      const rr = await sdk.fetchRoundRecord(roundBn);
+      const totalWalnPurchased = rr.walnPurchased;
       const newDust = BigInt(stateAfter.walnDustCarryover.toString());
       const walnInRound = BigInt(stateBefore.currentRoundSizeWaln.toString());
 

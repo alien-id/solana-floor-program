@@ -8,6 +8,16 @@ import {
 } from "@solana/spl-token";
 import { FloorProgram } from "../target/types/floor_program";
 
+export interface RoundRecordData {
+  roundIndex: bigint;
+  triggeredAt: bigint;
+  walnPurchased: bigint;
+  usdcSpent: bigint;
+  totalAatVolumeAtTrigger: bigint;
+  participantCount: number;
+  bump: number;
+}
+
 const TOKEN_2022_PROGRAM_ID = new PublicKey(
   "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 );
@@ -291,6 +301,48 @@ export class FloorSdk {
         this.program.methods.setLockPeriod(newLockPeriod).accounts(accounts).instruction(),
       setPaused: (paused: boolean): Promise<TransactionInstruction> =>
         this.program.methods.setPaused(paused).accounts(accounts).instruction(),
+    };
+  }
+
+  /**
+   * Fetch and decode the RoundRecord account for a given round index.
+   *
+   * RoundRecord is created via raw CPI and is not an Anchor account type
+   * in the IDL, so we decode the bytes manually here.
+   */
+  async fetchRoundRecord(roundIndex: BN): Promise<RoundRecordData> {
+    const [roundRecordPda] = this.roundRecordPda(roundIndex);
+    const info = await this.provider.connection.getAccountInfo(roundRecordPda);
+    if (!info) {
+      throw new Error(`RoundRecord account not found for roundIndex=${roundIndex.toString()}`);
+    }
+
+    // Account layout (all LE) after 8-byte discriminator:
+    // offset 0: round_index (u64)
+    // offset 8: triggered_at (i64)
+    // offset 16: waln_purchased (u64)
+    // offset 24: usdc_spent (u64)
+    // offset 32: total_aat_volume_at_trigger (u64)
+    // offset 40: participant_count (u32)
+    // offset 44: bump (u8)
+    const buf = Buffer.from(info.data).subarray(8);
+
+    const roundIndexDecoded = buf.readBigUInt64LE(0);
+    const triggeredAt = buf.readBigInt64LE(8);
+    const walnPurchased = buf.readBigUInt64LE(16);
+    const usdcSpent = buf.readBigUInt64LE(24);
+    const totalAatVolumeAtTrigger = buf.readBigUInt64LE(32);
+    const participantCount = buf.readUInt32LE(40);
+    const bump = buf.readUInt8(44);
+
+    return {
+      roundIndex: roundIndexDecoded,
+      triggeredAt,
+      walnPurchased,
+      usdcSpent,
+      totalAatVolumeAtTrigger,
+      participantCount,
+      bump,
     };
   }
 }
