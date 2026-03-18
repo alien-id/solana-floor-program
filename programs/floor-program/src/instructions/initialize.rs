@@ -77,5 +77,7 @@ pub fn handler(
     state.bump = ctx.bumps.contract_state;
     state.usdc_vault_bump = ctx.bumps.usdc_vault;
     state.waln_vault_bump = ctx.bumps.waln_vault;
+    state.waln_decimals = ctx.accounts.waln_mint.decimals;
+    state.usdc_decimals = ctx.accounts.usdc_mint.decimals;
     Ok(())
 }

@@ -81,6 +81,8 @@ pub fn handler<'info>(
         require!(waln_amount > 0, FloorError::ZeroAmount);
     }
 
+    let waln_decimals = ctx.accounts.waln_mint.decimals;
+
     // Round Start (lazy) — executes when round_started = false.
     if !ctx.accounts.contract_state.round_started {
         let remaining = ctx.remaining_accounts;
@@ -106,6 +108,7 @@ pub fn handler<'info>(
             investor_triplets,
             snapshot_size,
             snapshot_price,
+            waln_decimals,
         )?;
         ctx.accounts.contract_state.current_round_floor_price = snapshot_price;
         ctx.accounts.contract_state.current_round_size_waln = snapshot_size;
@@ -125,12 +128,14 @@ pub fn handler<'info>(
     }
 
     let floor_price_usdc = ctx.accounts.contract_state.current_round_floor_price;
-    let waln_decimals = ctx.accounts.waln_mint.decimals;
     let usdc_decimals = ctx.accounts.usdc_mint.decimals;
     let state_bump = ctx.accounts.contract_state.bump;
+    let waln_scale = 10_u128.pow(waln_decimals as u32);
 
     let usdc_out_u128 = (waln_amount as u128)
         .checked_mul(floor_price_usdc as u128)
+        .ok_or(FloorError::ArithmeticOverflow)?
+        .checked_div(waln_scale)
         .ok_or(FloorError::ArithmeticOverflow)?;
     let usdc_out = u64::try_from(usdc_out_u128).map_err(|_| FloorError::ArithmeticOverflow)?;
 
@@ -256,9 +261,14 @@ pub fn handler<'info>(
                 .ok_or(FloorError::ArithmeticOverflow)?;
 
             let usdc_locked = lobby_entry.usdc_locked_current_round;
-            let waln_alloc = usdc_locked
-                .checked_div(floor_price)
-                .ok_or(FloorError::ArithmeticOverflow)?;
+            let waln_alloc = u64::try_from(
+                (usdc_locked as u128)
+                    .checked_mul(waln_scale)
+                    .ok_or(FloorError::ArithmeticOverflow)?
+                    .checked_div(floor_price as u128)
+                    .ok_or(FloorError::ArithmeticOverflow)?,
+            )
+            .map_err(|_| FloorError::ArithmeticOverflow)?;
 
             lobby_entry.usdc_committed = lobby_entry
                 .usdc_committed
@@ -384,6 +394,7 @@ pub fn handler<'info>(
             investor_triplets,
             round_size_waln_val,
             floor_price_usdc_val,
+            waln_decimals,
         )
         .is_ok()
         {

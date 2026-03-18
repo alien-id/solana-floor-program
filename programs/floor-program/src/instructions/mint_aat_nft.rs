@@ -25,6 +25,7 @@ pub struct MintAatNft<'info> {
     pub mint: UncheckedAccount<'info>,
 
     #[account(
+        mut,
         seeds = [CONTRACT_STATE_SEED],
         bump = contract_state.bump,
         constraint = contract_state.admin == admin.key() @ FloorError::Unauthorized,
@@ -52,7 +53,17 @@ pub struct MintAatNft<'info> {
     pub associated_token_program: Program<'info, AssociatedToken>,
 }
 
+const MAX_TOTAL_WALN_ALLOCATION: u64 = 100_000;
+
 pub fn handler(ctx: Context<MintAatNft>, waln_allocation: u64) -> Result<()> {
+    let new_total = ctx.accounts.contract_state.total_waln_allocation
+        .checked_add(waln_allocation)
+        .ok_or(FloorError::ArithmeticOverflow)?;
+    require!(
+        new_total <= MAX_TOTAL_WALN_ALLOCATION,
+        FloorError::WalnAllocationLimitExceeded
+    );
+
     let space = match ExtensionType::try_calculate_account_len::<Mint>(&[
         ExtensionType::MetadataPointer,
         ExtensionType::NonTransferable,
@@ -198,6 +209,8 @@ pub fn handler(ctx: Context<MintAatNft>, waln_allocation: u64) -> Result<()> {
         AuthorityType::MintTokens,
         None
     )?;
+
+    ctx.accounts.contract_state.total_waln_allocation = new_total;
 
     Ok(())
 }

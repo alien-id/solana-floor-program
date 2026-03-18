@@ -36,4 +36,6 @@ pub enum FloorError {
     FundsLocked,
     #[msg("Floor price and round size must be greater than zero")]
     InvalidParameter,
+    #[msg("Total wALN allocation across all NFTs would exceed 100,000 (100%)")]
+    WalnAllocationLimitExceeded,
 }

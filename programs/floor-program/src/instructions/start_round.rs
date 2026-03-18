@@ -15,9 +15,13 @@ pub fn execute_round_start<'info>(
     triplets: &'info [AccountInfo<'info>],
     round_size_waln: u64,
     floor_price_usdc: u64,
+    waln_decimals: u8,
 ) -> Result<u64> {
+    let waln_scale = 10_u128.pow(waln_decimals as u32);
     let round_cap_usdc = (round_size_waln as u128)
         .checked_mul(floor_price_usdc as u128)
+        .ok_or(FloorError::ArithmeticOverflow)?
+        .checked_div(waln_scale)
         .ok_or(FloorError::ArithmeticOverflow)?;
 
     // Pass 1: compute total_waln_allocation across all eligible investors.
