@@ -22,8 +22,16 @@ jobs:
         run: rustup default stable
       - name: List rustup toolchains
         run: rustup toolchain list
-      - name: Generate new keygen
-        run: solana-keygen new
+      - name: Generate keypair
+        run: |
+          mkdir -p $HOME/.config/solana
+          solana-keygen new \
+            --outfile $HOME/.config/solana/id.json \
+            --no-bip39-passphrase --force
+      - name: Fix blake3 compatibility
+        run: cargo update -p blake3 --precise 1.8.2
+      - name: Fix indexmap compatibility
+        run: cargo update -p indexmap --precise 2.11.4
       - name: Set solana target cluster to local
         run: solana config set --url http:localhost:8899
       - name: Check solana config
