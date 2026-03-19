@@ -53,7 +53,7 @@ pub struct MintAatNft<'info> {
     pub associated_token_program: Program<'info, AssociatedToken>,
 }
 
-const MAX_TOTAL_AAT_VOLUME: u64 = 1_000_000;
+pub const MAX_TOTAL_AAT_VOLUME: u64 = 1_000_000;
 
 pub fn handler(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
     let new_total = ctx.accounts.contract_state.total_aat_volume

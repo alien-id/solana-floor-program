@@ -1775,27 +1775,21 @@ describe("floor-program", () => {
 
       const base1 = locked1 * walnScale / floorPrice;
       const base2 = locked2 * walnScale / floorPrice;
-      const bonus1 = totalUsdcLocked > 0n ? dustCarryover * locked1 / totalUsdcLocked : 0n;
-      const bonus2 = totalUsdcLocked > 0n ? dustCarryover * locked2 / totalUsdcLocked : 0n;
 
       assert.equal(
         BigInt(lw1.walnAmount.toString()),
-        base1 + bonus1,
-        "investor1 should receive base + dust bonus"
+        base1 + dustCarryover,
+        "investor1 should receive base + full dust bonus"
       );
       assert.equal(
         BigInt(lw2.walnAmount.toString()),
-        base2 + bonus2,
-        "investor2 should receive base + dust bonus"
+        base2,
+        "investor2 should receive only base allocation"
       );
 
       assert.ok(
         BigInt(lw1.walnAmount.toString()) > base1,
         "investor1 total should exceed base allocation due to dust"
-      );
-      assert.ok(
-        BigInt(lw2.walnAmount.toString()) > base2,
-        "investor2 total should exceed base allocation due to dust"
       );
 
       const stateAfter = await sdk.program.account.programState.fetch(contractState);

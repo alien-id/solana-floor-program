@@ -197,7 +197,6 @@ pub fn handler<'info>(
         let floor_price_usdc_val = state.floor_price_usdc;
         let dust_pool = state.waln_dust_carryover;
         let waln_in_round = state.current_round_waln;
-        let total_usdc_locked = state.total_usdc_locked_for_round;
 
         let unlock_timestamp = clock
             .unix_timestamp
@@ -216,6 +215,7 @@ pub fn handler<'info>(
         let mut total_waln_purchased: u64 = 0;
         let mut participant_count: u32 = 0;
         let mut total_aat_volume_at_trigger: u64 = 0;
+        let mut dust_given = false;
 
         for chunk in investor_triplets.chunks(3) {
             if chunk.len() < 3 {
@@ -261,15 +261,9 @@ pub fn handler<'info>(
             )
             .map_err(|_| FloorError::ArithmeticOverflow)?;
 
-            let bonus = if total_usdc_locked > 0 && dust_pool > 0 {
-                u64::try_from(
-                    (dust_pool as u128)
-                        .checked_mul(usdc_locked as u128)
-                        .ok_or(FloorError::ArithmeticOverflow)?
-                        .checked_div(total_usdc_locked as u128)
-                        .ok_or(FloorError::ArithmeticOverflow)?,
-                )
-                .map_err(|_| FloorError::ArithmeticOverflow)?
+            let bonus = if !dust_given && dust_pool > 0 {
+                dust_given = true;
+                dust_pool
             } else {
                 0
             };

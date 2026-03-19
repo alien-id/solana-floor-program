@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 use std::collections::BTreeSet;
 
 use crate::errors::FloorError;
+use crate::instructions::mint_aat_nft::MAX_TOTAL_AAT_VOLUME;
 use crate::seeds::LOBBY_ENTRY_SEED;
 use crate::state::LobbyEntry;
 
@@ -22,8 +23,6 @@ pub fn execute_round_start<'info>(
         .checked_div(waln_scale)
         .ok_or(FloorError::ArithmeticOverflow)?;
 
-    // Pass 1: compute total_aat_volume across all eligible investors.
-    // Each investor must appear exactly once; duplicate triplets are rejected.
     let mut total_aat_volume: u64 = 0;
     let mut seen_investors: BTreeSet<Pubkey> = BTreeSet::new();
     let mut i = 0;
@@ -51,12 +50,18 @@ pub fn execute_round_start<'info>(
             FloorError::InvalidRemainingAccounts
         );
 
-        if lobby_entry.usdc_deposited == 0 {
+        if lobby_entry.usdc_deposited == 0 || lobby_entry.aat_volume == 0 {
             continue;
         }
 
         let alloc = lobby_entry.aat_volume;
-        if alloc == 0 {
+        let proportional_share = round_cap_usdc
+            .checked_mul(alloc as u128)
+            .ok_or(FloorError::ArithmeticOverflow)?
+            .checked_div(MAX_TOTAL_AAT_VOLUME as u128)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+        let min_deposit = proportional_share / 2;
+        if (lobby_entry.usdc_deposited as u128) < min_deposit {
             continue;
         }
 
@@ -67,7 +72,6 @@ pub fn execute_round_start<'info>(
 
     require!(total_aat_volume > 0, FloorError::NoEligibleInvestors);
 
-    // Pass 2: compute and persist usdc_locked_current_round for each eligible investor.
     let mut total_usdc_locked: u64 = 0;
     let mut i = 0;
     while i + 2 < triplets.len() {
@@ -89,12 +93,18 @@ pub fn execute_round_start<'info>(
             FloorError::InvalidRemainingAccounts
         );
 
-        if lobby_entry.usdc_deposited == 0 {
+        if lobby_entry.usdc_deposited == 0 || lobby_entry.aat_volume == 0 {
             continue;
         }
 
         let alloc = lobby_entry.aat_volume;
-        if alloc == 0 {
+        let proportional_share = round_cap_usdc
+            .checked_mul(alloc as u128)
+            .ok_or(FloorError::ArithmeticOverflow)?
+            .checked_div(MAX_TOTAL_AAT_VOLUME as u128)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+        let min_deposit = proportional_share / 2;
+        if (lobby_entry.usdc_deposited as u128) < min_deposit {
             continue;
         }
 
