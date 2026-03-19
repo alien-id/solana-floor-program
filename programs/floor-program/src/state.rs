@@ -2,6 +2,24 @@ use anchor_lang::prelude::*;
 
 pub const MAX_INVESTORS: usize = 140;
 
+#[zero_copy]
+pub struct InvestorAlloc {
+    pub investor: Pubkey,
+    pub waln_amount: u64,
+    pub unlock: i64,
+    pub claimed: u8,
+    pub _pad: [u8; 7],
+}
+
+#[account(zero_copy)]
+pub struct RoundLockedWaln {
+    pub round_index: u64,
+    pub count: u32,
+    pub bump: u8,
+    pub _pad: [u8; 3],
+    pub investors: [InvestorAlloc; MAX_INVESTORS],
+}
+
 #[account(zero_copy)]
 pub struct ProgramState {
     pub admin: Pubkey,
@@ -30,28 +48,6 @@ pub struct ProgramState {
     pub _padding: [u8; 1],
 }
 
-#[account]
-#[derive(InitSpace)]
-pub struct LobbyEntry {
-    pub investor: Pubkey,
-    pub usdc_deposited: u64,
-    pub usdc_locked_current_round: u64,
-    pub usdc_committed: u64,
-    pub waln_purchased_total: u64,
-    pub aat_volume: u64,
-    pub bump: u8,
-}
-
-#[account]
-#[derive(InitSpace)]
-pub struct LockedWaln {
-    pub investor: Pubkey,
-    pub round_index: u64,
-    pub waln_amount: u64,
-    pub unlock: i64,
-    pub claimed: bool,
-    pub bump: u8,
-}
 
 #[account]
 pub struct AatNftAuthority {}

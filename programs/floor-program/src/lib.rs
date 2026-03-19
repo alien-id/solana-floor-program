@@ -20,42 +20,54 @@ pub mod floor_program {
         round_size_waln: u64,
         lock_period_seconds: i64,
     ) -> Result<()> {
-        instructions::initialize::handler(ctx, floor_price_usdc, round_size_waln, lock_period_seconds)
+        initialize::handler(
+            ctx,
+            floor_price_usdc,
+            round_size_waln,
+            lock_period_seconds,
+        )
     }
 
     pub fn set_floor_price(ctx: Context<AdminOnly>, new_price_usdc: u64) -> Result<()> {
-        instructions::admin::set_floor_price(ctx, new_price_usdc)
+        admin::set_floor_price(ctx, new_price_usdc)
     }
 
     pub fn set_round_size(ctx: Context<AdminOnly>, new_round_size_waln: u64) -> Result<()> {
-        instructions::admin::set_round_size(ctx, new_round_size_waln)
+        admin::set_round_size(ctx, new_round_size_waln)
     }
 
     pub fn set_lock_period(ctx: Context<AdminOnly>, new_lock_period: i64) -> Result<()> {
-        instructions::admin::set_lock_period(ctx, new_lock_period)
+        admin::set_lock_period(ctx, new_lock_period)
     }
 
     pub fn set_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
-        instructions::admin::set_paused(ctx, paused)
+        admin::set_paused(ctx, paused)
+    }
+
+    pub fn fund_treasury(ctx: Context<FundTreasury>, amount: u64) -> Result<()> {
+        admin::fund_treasury(ctx, amount)
     }
 
     pub fn deposit_usdc(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
-        instructions::deposit_usdc::handler(ctx, usdc_amount)
+        deposit_usdc::handler(ctx, usdc_amount)
     }
 
     pub fn withdraw_usdc(ctx: Context<WithdrawUsdc>, amount: u64) -> Result<()> {
-        instructions::withdraw_usdc::handler(ctx, amount)
+        withdraw_usdc::handler(ctx, amount)
     }
 
-    pub fn sell_waln<'info>(ctx: Context<'_, '_, 'info, 'info, SellWaln<'info>>, waln_amount: u64) -> Result<()> {
-        instructions::sell_waln::handler(ctx, waln_amount)
+    pub fn sell_waln<'info>(
+        ctx: Context<'_, '_, 'info, 'info, SellWaln<'info>>,
+        waln_amount: u64,
+    ) -> Result<()> {
+        sell_waln::handler(ctx, waln_amount)
     }
 
     pub fn claim_waln(ctx: Context<ClaimWaln>, round_index: u64) -> Result<()> {
-        instructions::claim_waln::handler(ctx, round_index)
+        claim_waln::handler(ctx, round_index)
     }
 
     pub fn mint_aat_nft(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
-        instructions::mint_aat_nft::handler(ctx, aat_volume)
+        mint_aat_nft::handler(ctx, aat_volume)
     }
 }

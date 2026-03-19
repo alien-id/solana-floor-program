@@ -7,10 +7,10 @@ use anchor_spl::token_interface::{
 use crate::errors::FloorError;
 use crate::instructions::start_round::execute_round_start;
 use crate::seeds::{
-    CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, LOCKED_WALN_SEED, ROUND_RECORD_SEED, USDC_VAULT_SEED,
-    WALN_VAULT_SEED,
+    CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, ROUND_LOCKED_WALN_SEED, ROUND_RECORD_SEED,
+    TREASURY_SEED, USDC_VAULT_SEED, WALN_VAULT_SEED,
 };
-use crate::state::{InvestorPool, LockedWaln, ProgramState, RoundRecord};
+use crate::state::{InvestorAlloc, InvestorPool, ProgramState, RoundLockedWaln, RoundRecord};
 
 #[derive(Accounts)]
 pub struct SellWaln<'info> {
@@ -69,6 +69,14 @@ pub struct SellWaln<'info> {
         token::token_program = usdc_token_program,
     )]
     pub usdc_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+
+    /// CHECK: Treasury PDA — system-owned, funds round account creation
+    #[account(
+        mut,
+        seeds = [TREASURY_SEED],
+        bump,
+    )]
+    pub treasury: UncheckedAccount<'info>,
 
     pub waln_token_program: Interface<'info, TokenInterface>,
     pub usdc_token_program: Interface<'info, TokenInterface>,
@@ -146,6 +154,8 @@ pub fn handler<'info>(
     let usdc_out = u64::try_from(usdc_out_u128).map_err(|_| FloorError::ArithmeticOverflow)?;
 
     let seller_info = ctx.accounts.seller.to_account_info();
+    let treasury_info = ctx.accounts.treasury.to_account_info();
+    let treasury_bump = ctx.bumps.treasury;
     let system_program_info = ctx.accounts.system_program.to_account_info();
     let contract_state_info = ctx.accounts.contract_state.to_account_info();
 
@@ -190,7 +200,7 @@ pub fn handler<'info>(
     if state.current_round_waln >= current_round_size_waln {
         let remaining = ctx.remaining_accounts;
         require!(
-            !remaining.is_empty(),
+            remaining.len() >= 2,
             FloorError::InvalidRemainingAccounts
         );
 
@@ -205,130 +215,144 @@ pub fn handler<'info>(
             .ok_or(FloorError::ArithmeticOverflow)?;
 
         let round_record_info = &remaining[0];
-        let locked_waln_accounts = &remaining[1..];
+        let round_locked_waln_info = &remaining[1];
 
         require!(
             round_record_pda == round_record_info.key(),
             FloorError::InvalidRemainingAccounts
         );
 
+        let (round_locked_waln_pda, round_locked_waln_bump) = Pubkey::find_program_address(
+            &[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes()],
+            &crate::ID,
+        );
+        require!(
+            round_locked_waln_pda == round_locked_waln_info.key(),
+            FloorError::InvalidRemainingAccounts
+        );
+
         let mut total_usdc_spent: u64 = 0;
         let mut total_waln_purchased: u64 = 0;
-        let mut participant_count: u32 = 0;
         let mut total_aat_volume_at_trigger: u64 = 0;
-        let mut dust_given = false;
-        let mut locked_waln_idx: usize = 0;
 
-        let locked_waln_space = 8 + LockedWaln::INIT_SPACE;
-        let locked_waln_rent = Rent::get()?.minimum_balance(locked_waln_space);
+        let mut participant_data: Vec<(Pubkey, u64)> = Vec::new();
+        let mut participant_count_for_dust: u64 = 0;
 
-        let mut pool = ctx.accounts.investor_pool.load_mut()?;
-        let pool_count = pool.count as usize;
+        {
+            let mut pool = ctx.accounts.investor_pool.load_mut()?;
+            let pool_count = pool.count as usize;
 
-        for record in pool.investors[..pool_count].iter_mut() {
-            if record.usdc_locked_current_round == 0 {
-                continue;
+            for record in pool.investors[..pool_count].iter_mut() {
+                if record.usdc_locked_current_round == 0 {
+                    continue;
+                }
+
+                participant_count_for_dust = participant_count_for_dust
+                    .checked_add(1)
+                    .ok_or(FloorError::ArithmeticOverflow)?;
+
+                let investor = record.investor;
+                let alloc = record.aat_volume;
+                total_aat_volume_at_trigger = total_aat_volume_at_trigger
+                    .checked_add(alloc)
+                    .ok_or(FloorError::ArithmeticOverflow)?;
+
+                let usdc_locked = record.usdc_locked_current_round;
+                let base_waln = u64::try_from(
+                    (usdc_locked as u128)
+                        .checked_mul(waln_scale)
+                        .ok_or(FloorError::ArithmeticOverflow)?
+                        .checked_div(floor_price_usdc as u128)
+                        .ok_or(FloorError::ArithmeticOverflow)?,
+                )
+                .map_err(|_| FloorError::ArithmeticOverflow)?;
+
+                record.usdc_committed = record
+                    .usdc_committed
+                    .checked_add(usdc_locked)
+                    .ok_or(FloorError::ArithmeticOverflow)?;
+                record.usdc_locked_current_round = 0;
+                record.waln_purchased_total = record
+                    .waln_purchased_total
+                    .checked_add(base_waln)
+                    .ok_or(FloorError::ArithmeticOverflow)?;
+
+                total_usdc_spent = total_usdc_spent
+                    .checked_add(usdc_locked)
+                    .ok_or(FloorError::ArithmeticOverflow)?;
+                total_waln_purchased = total_waln_purchased
+                    .checked_add(base_waln)
+                    .ok_or(FloorError::ArithmeticOverflow)?;
+
+                participant_data.push((investor, base_waln));
             }
+        }
 
-            let investor = record.investor;
+        if dust_pool > 0 && participant_count_for_dust > 0 {
+            let dust_recipient_idx = (clock.unix_timestamp as u64)
+                .wrapping_rem(participant_count_for_dust) as usize;
 
-            let alloc = record.aat_volume;
-            total_aat_volume_at_trigger = total_aat_volume_at_trigger
-                .checked_add(alloc)
-                .ok_or(FloorError::ArithmeticOverflow)?;
-
-            let usdc_locked = record.usdc_locked_current_round;
-            let base_waln = u64::try_from(
-                (usdc_locked as u128)
-                    .checked_mul(waln_scale)
-                    .ok_or(FloorError::ArithmeticOverflow)?
-                    .checked_div(floor_price_usdc as u128)
-                    .ok_or(FloorError::ArithmeticOverflow)?,
-            )
-            .map_err(|_| FloorError::ArithmeticOverflow)?;
-
-            let bonus = if !dust_given && dust_pool > 0 {
-                dust_given = true;
-                dust_pool
-            } else {
-                0
-            };
-
-            let waln_alloc = base_waln
-                .checked_add(bonus)
-                .ok_or(FloorError::ArithmeticOverflow)?;
-
-            record.usdc_committed = record
-                .usdc_committed
-                .checked_add(usdc_locked)
-                .ok_or(FloorError::ArithmeticOverflow)?;
-            record.usdc_locked_current_round = 0;
-            record.waln_purchased_total = record
-                .waln_purchased_total
-                .checked_add(waln_alloc)
-                .ok_or(FloorError::ArithmeticOverflow)?;
-
-            require!(
-                locked_waln_idx < locked_waln_accounts.len(),
-                FloorError::InvalidRemainingAccounts
-            );
-            let locked_waln_info = &locked_waln_accounts[locked_waln_idx];
-            locked_waln_idx += 1;
-
-            let (locked_waln_pda, locked_waln_bump) = Pubkey::find_program_address(
-                &[
-                    LOCKED_WALN_SEED,
-                    investor.as_ref(),
-                    &round_index.to_le_bytes(),
-                ],
-                &crate::ID,
-            );
-            require!(
-                locked_waln_pda == locked_waln_info.key(),
-                FloorError::InvalidRemainingAccounts
-            );
-
-            invoke_signed(
-                &system_instruction::create_account(
-                    seller_info.key,
-                    locked_waln_info.key,
-                    locked_waln_rent,
-                    locked_waln_space as u64,
-                    &crate::ID,
-                ),
-                &[seller_info.clone(), locked_waln_info.clone(), system_program_info.clone()],
-                &[&[
-                    LOCKED_WALN_SEED,
-                    investor.as_ref(),
-                    &round_index.to_le_bytes(),
-                    &[locked_waln_bump],
-                ]],
-            )?;
-
-            {
-                let mut data = locked_waln_info.try_borrow_mut_data()?;
-                data[..8].copy_from_slice(&LockedWaln::DISCRIMINATOR);
-                let locked_record = LockedWaln {
-                    investor,
-                    round_index,
-                    waln_amount: waln_alloc,
-                    unlock: unlock_timestamp,
-                    claimed: false,
-                    bump: locked_waln_bump,
-                };
-                use anchor_lang::AnchorSerialize;
-                locked_record.serialize(&mut &mut data[8..])?;
-            }
-
-            total_usdc_spent = total_usdc_spent
-                .checked_add(usdc_locked)
+            participant_data[dust_recipient_idx].1 = participant_data[dust_recipient_idx]
+                .1
+                .checked_add(dust_pool)
                 .ok_or(FloorError::ArithmeticOverflow)?;
             total_waln_purchased = total_waln_purchased
-                .checked_add(waln_alloc)
+                .checked_add(dust_pool)
                 .ok_or(FloorError::ArithmeticOverflow)?;
-            participant_count = participant_count
-                .checked_add(1)
-                .ok_or(FloorError::ArithmeticOverflow)?;
+
+            let winner_key = participant_data[dust_recipient_idx].0;
+            let mut pool = ctx.accounts.investor_pool.load_mut()?;
+            let pool_count = pool.count as usize;
+            if let Some(record) = pool.investors[..pool_count]
+                .iter_mut()
+                .find(|r| r.investor == winner_key)
+            {
+                record.waln_purchased_total = record
+                    .waln_purchased_total
+                    .checked_add(dust_pool)
+                    .ok_or(FloorError::ArithmeticOverflow)?;
+            }
+        }
+
+        participant_data.sort_unstable_by(|a, b| a.0.to_bytes().cmp(&b.0.to_bytes()));
+
+        let participant_count = participant_data.len() as u32;
+        let round_locked_waln_space = 8 + std::mem::size_of::<RoundLockedWaln>();
+        let round_locked_waln_rent = Rent::get()?.minimum_balance(round_locked_waln_space);
+
+        invoke_signed(
+            &system_instruction::create_account(
+                treasury_info.key,
+                round_locked_waln_info.key,
+                round_locked_waln_rent,
+                round_locked_waln_space as u64,
+                &crate::ID,
+            ),
+            &[treasury_info.clone(), round_locked_waln_info.clone(), system_program_info.clone()],
+            &[
+                &[TREASURY_SEED, &[treasury_bump]],
+                &[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]],
+            ],
+        )?;
+
+        {
+            let mut data = round_locked_waln_info.try_borrow_mut_data()?;
+            data[..8].copy_from_slice(&RoundLockedWaln::DISCRIMINATOR);
+            let rw: &mut RoundLockedWaln =
+                bytemuck::from_bytes_mut(&mut data[8..]);
+            rw.round_index = round_index;
+            rw.count = participant_count;
+            rw.bump = round_locked_waln_bump;
+            rw._pad = [0; 3];
+            for (i, (investor, waln_alloc)) in participant_data.iter().enumerate() {
+                rw.investors[i] = InvestorAlloc {
+                    investor: *investor,
+                    waln_amount: *waln_alloc,
+                    unlock: unlock_timestamp,
+                    claimed: 0,
+                    _pad: [0; 7],
+                };
+            }
         }
 
         let round_record_space = 8 + RoundRecord::INIT_SPACE;
@@ -336,18 +360,17 @@ pub fn handler<'info>(
 
         invoke_signed(
             &system_instruction::create_account(
-                seller_info.key,
+                treasury_info.key,
                 round_record_info.key,
                 round_record_rent,
                 round_record_space as u64,
                 &crate::ID,
             ),
-            &[seller_info.clone(), round_record_info.clone(), system_program_info.clone()],
-            &[&[
-                ROUND_RECORD_SEED,
-                &round_index.to_le_bytes(),
-                &[round_record_bump],
-            ]],
+            &[treasury_info.clone(), round_record_info.clone(), system_program_info.clone()],
+            &[
+                &[TREASURY_SEED, &[treasury_bump]],
+                &[ROUND_RECORD_SEED, &round_index.to_le_bytes(), &[round_record_bump]],
+            ],
         )?;
 
         {
@@ -385,17 +408,28 @@ pub fn handler<'info>(
         )
         .map_err(|_| FloorError::ArithmeticOverflow)?;
 
-        let pool_count = pool.count as usize;
-        if let Ok((_aat_vol, usdc_locked)) = execute_round_start(
-            &mut pool.investors[..pool_count],
-            round_size_waln_val,
-            floor_price_usdc_val,
-            waln_decimals,
-        ) {
-            state.current_round_floor_price = floor_price_usdc_val;
-            state.current_round_size_waln = round_size_waln_val;
-            state.total_usdc_locked_for_round = usdc_locked;
-            state.round_started = 1;
+        {
+            let mut pool = ctx.accounts.investor_pool.load_mut()?;
+            let pool_count = pool.count as usize;
+            match execute_round_start(
+                &mut pool.investors[..pool_count],
+                round_size_waln_val,
+                floor_price_usdc_val,
+                waln_decimals,
+            ) {
+                Ok((_aat_vol, usdc_locked)) => {
+                    state.current_round_floor_price = floor_price_usdc_val;
+                    state.current_round_size_waln = round_size_waln_val;
+                    state.total_usdc_locked_for_round = usdc_locked;
+                    state.round_started = 1;
+                }
+                Err(ref e) if e == &FloorError::NoEligibleInvestors.into() => {
+                    msg!("Auto-start skipped: no eligible investors");
+                }
+                Err(e) => {
+                    return Err(e);
+                }
+            }
         }
     }
 

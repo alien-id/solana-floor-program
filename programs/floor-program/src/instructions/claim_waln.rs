@@ -4,8 +4,8 @@ use anchor_spl::token_interface::{
 };
 
 use crate::errors::FloorError;
-use crate::seeds::{CONTRACT_STATE_SEED, LOCKED_WALN_SEED, WALN_VAULT_SEED};
-use crate::state::{ProgramState, LockedWaln};
+use crate::seeds::{CONTRACT_STATE_SEED, ROUND_LOCKED_WALN_SEED, WALN_VAULT_SEED};
+use crate::state::{ProgramState, RoundLockedWaln};
 
 #[derive(Accounts)]
 #[instruction(round_index: u64)]
@@ -20,11 +20,10 @@ pub struct ClaimWaln<'info> {
 
     #[account(
         mut,
-        seeds = [LOCKED_WALN_SEED, investor.key().as_ref(), &round_index.to_le_bytes()],
-        bump = locked_waln.bump,
-        constraint = locked_waln.investor == investor.key() @ FloorError::InvalidInvestor,
+        seeds = [ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes()],
+        bump,
     )]
-    pub locked_waln: Account<'info, LockedWaln>,
+    pub round_locked_waln: AccountLoader<'info, RoundLockedWaln>,
 
     pub waln_mint: InterfaceAccount<'info, Mint>,
 
@@ -60,16 +59,31 @@ pub fn handler(ctx: Context<ClaimWaln>, _round_index: u64) -> Result<()> {
     }
     require!(ctx.accounts.waln_mint.key() == waln_mint_key, FloorError::InvalidMint);
 
-    let locked_waln = &mut ctx.accounts.locked_waln;
-    require!(!locked_waln.claimed, FloorError::AlreadyClaimed);
+    let investor_key = ctx.accounts.investor.key();
 
-    let clock = Clock::get()?;
-    require!(
-        clock.unix_timestamp >= locked_waln.unlock,
-        FloorError::NotYetUnlocked
-    );
+    let waln_amount;
+    {
+        let mut round_locked_waln = ctx.accounts.round_locked_waln.load_mut()?;
+        let count = round_locked_waln.count as usize;
 
-    let waln_amount = locked_waln.waln_amount;
+        let idx = round_locked_waln.investors[..count]
+            .binary_search_by_key(&investor_key.to_bytes(), |a| a.investor.to_bytes())
+            .map_err(|_| error!(FloorError::InvalidInvestor))?;
+
+        let alloc = &mut round_locked_waln.investors[idx];
+
+        require!(alloc.claimed == 0, FloorError::AlreadyClaimed);
+
+        let clock = Clock::get()?;
+        require!(
+            clock.unix_timestamp >= alloc.unlock,
+            FloorError::NotYetUnlocked
+        );
+
+        waln_amount = alloc.waln_amount;
+        alloc.claimed = 1;
+    }
+
     let seeds: &[&[u8]] = &[CONTRACT_STATE_SEED, &[state_bump]];
     let signer = &[seeds];
 
@@ -87,8 +101,6 @@ pub fn handler(ctx: Context<ClaimWaln>, _round_index: u64) -> Result<()> {
         waln_amount,
         ctx.accounts.waln_mint.decimals,
     )?;
-
-    locked_waln.claimed = true;
 
     Ok(())
 }

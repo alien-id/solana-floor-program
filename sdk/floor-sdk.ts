@@ -56,6 +56,13 @@ export class FloorSdk {
     );
   }
 
+  treasuryPda(): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync(
+        [Buffer.from("treasury")],
+        this.programId
+    );
+  }
+
   usdcVaultPda(): [PublicKey, number] {
     return PublicKey.findProgramAddressSync(
       [Buffer.from("usdc_vault")],
@@ -85,10 +92,10 @@ export class FloorSdk {
     );
   }
 
-  lockedWalnPda(investor: PublicKey, roundIndex: BN): [PublicKey, number] {
+  roundLockedWalnPda(roundIndex: BN): [PublicKey, number] {
     const roundBuf = roundIndex.toArrayLike(Buffer, "le", 8);
     return PublicKey.findProgramAddressSync(
-      [Buffer.from("locked_waln"), investor.toBuffer(), roundBuf],
+      [Buffer.from("round_locked_waln"), roundBuf],
       this.programId
     );
   }
@@ -321,20 +328,57 @@ export class FloorSdk {
   }): Promise<TransactionInstruction> {
     const [contractState] = this.contractStatePda();
     const [walnVault] = this.walnVaultPda();
-    const [lockedWaln] = this.lockedWalnPda(args.investor, args.roundIndex);
+    const [roundLockedWaln] = this.roundLockedWalnPda(args.roundIndex);
 
     return this.program.methods
       .claimWaln(args.roundIndex)
       .accounts({
         investor: args.investor,
         contractState,
-        lockedWaln,
+        roundLockedWaln,
         walnMint: args.walnMint,
         investorWalnAccount: args.investorWalnAccount,
         walnVault,
         walnTokenProgram: args.walnTokenProgram ?? TOKEN_PROGRAM_ID,
       })
       .instruction();
+  }
+
+  /**
+   * Decode the RoundLockedWaln account and return the InvestorAlloc for a given investor.
+   * Layout per InvestorAlloc (56 bytes):
+   *   [0..32]  investor: Pubkey
+   *   [32..40] waln_amount: u64 LE
+   *   [40..48] unlock: i64 LE
+   *   [48]     claimed: u8
+   *   [49..56] _pad
+   */
+  async fetchInvestorAlloc(roundIndex: BN, investor: PublicKey): Promise<{
+    investor: PublicKey;
+    walnAmount: bigint;
+    unlock: bigint;
+    claimed: boolean;
+  } | null> {
+    const [roundLockedWalnPda] = this.roundLockedWalnPda(roundIndex);
+    const info = await this.provider.connection.getAccountInfo(roundLockedWalnPda);
+    if (!info) return null;
+
+    const buf = Buffer.from(info.data);
+    const count = buf.readUInt32LE(8 + 8);
+    const ALLOC_SIZE = 56;
+    const ALLOC_OFFSET = 8 + 16;
+
+    for (let i = 0; i < count; i++) {
+      const off = ALLOC_OFFSET + i * ALLOC_SIZE;
+      const key = new PublicKey(buf.subarray(off, off + 32));
+      if (key.equals(investor)) {
+        const walnAmount = buf.readBigUInt64LE(off + 32);
+        const unlock = buf.readBigInt64LE(off + 40);
+        const claimed = buf.readUInt8(off + 48) !== 0;
+        return { investor: key, walnAmount, unlock, claimed };
+      }
+    }
+    return null;
   }
 
   admin(adminPubkey: PublicKey) {
@@ -350,6 +394,8 @@ export class FloorSdk {
         this.program.methods.setLockPeriod(newLockPeriod).accounts(accounts).instruction(),
       setPaused: (paused: boolean): Promise<TransactionInstruction> =>
         this.program.methods.setPaused(paused).accounts(accounts).instruction(),
+      fundTreasury: (amount: BN): Promise<TransactionInstruction> =>
+        this.program.methods.fundTreasury(amount).accounts(accounts).instruction(),
     };
   }
 
