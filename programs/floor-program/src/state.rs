@@ -36,6 +36,7 @@ pub struct LobbyEntry {
     pub usdc_locked_current_round: u64,
     pub usdc_committed: u64,
     pub waln_purchased_total: u64,
+    pub aat_volume: u64,
     pub bump: u8,
 }
 

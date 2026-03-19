@@ -6,7 +6,6 @@ use anchor_spl::token_interface::{
 
 use crate::errors::FloorError;
 use crate::instructions::start_round::execute_round_start;
-use crate::nft_utils::verify_aat_nft_and_get_allocation;
 use crate::seeds::{
     CONTRACT_STATE_SEED, LOBBY_ENTRY_SEED, LOCKED_WALN_SEED, ROUND_RECORD_SEED, USDC_VAULT_SEED,
     WALN_VAULT_SEED,
@@ -83,6 +82,12 @@ pub fn handler<'info>(
 
     let waln_decimals = ctx.accounts.waln_mint.decimals;
 
+    let round_index = ctx.accounts.contract_state.round_count;
+    let (round_record_pda, round_record_bump) = Pubkey::find_program_address(
+        &[ROUND_RECORD_SEED, &round_index.to_le_bytes()],
+        &crate::ID,
+    );
+
     // Round Start (lazy) — executes when round_started = false.
     if !ctx.accounts.contract_state.round_started {
         let remaining = ctx.remaining_accounts;
@@ -91,13 +96,8 @@ pub fn handler<'info>(
             FloorError::InvalidRemainingAccounts
         );
 
-        let round_index = ctx.accounts.contract_state.round_count;
-        let (expected_rr_pda, _) = Pubkey::find_program_address(
-            &[ROUND_RECORD_SEED, &round_index.to_le_bytes()],
-            &crate::ID,
-        );
         require!(
-            expected_rr_pda == remaining[0].key(),
+            round_record_pda == remaining[0].key(),
             FloorError::InvalidRemainingAccounts
         );
 
@@ -191,7 +191,6 @@ pub fn handler<'info>(
         );
 
         let clock = Clock::get()?;
-        let round_index = state.round_count;
         let lock_period = state.lock_period_seconds;
         let floor_price = state.current_round_floor_price;
         let round_size_waln_val = state.round_size_waln;
@@ -208,10 +207,6 @@ pub fn handler<'info>(
         let round_record_info = &remaining[0];
         let investor_triplets = &remaining[1..];
 
-        let (round_record_pda, round_record_bump) = Pubkey::find_program_address(
-            &[ROUND_RECORD_SEED, &round_index.to_le_bytes()],
-            &crate::ID,
-        );
         require!(
             round_record_pda == round_record_info.key(),
             FloorError::InvalidRemainingAccounts
@@ -228,7 +223,6 @@ pub fn handler<'info>(
             }
             let lobby_entry_info = &chunk[0];
             let locked_waln_info = &chunk[1];
-            let core_asset_info = &chunk[2];
 
             let mut lobby_entry: Account<LobbyEntry> =
                 match Account::try_from(lobby_entry_info) {
@@ -252,14 +246,7 @@ pub fn handler<'info>(
 
             let investor = lobby_entry.investor;
 
-            // Verify the Core Asset still belongs to the investor and get allocation weight.
-            let alloc = match verify_aat_nft_and_get_allocation(
-                core_asset_info,
-                &investor,
-            ) {
-                Ok(a) => a,
-                Err(_) => 0,
-            };
+            let alloc = lobby_entry.aat_volume;
             total_aat_volume_at_trigger = total_aat_volume_at_trigger
                 .checked_add(alloc)
                 .ok_or(FloorError::ArithmeticOverflow)?;

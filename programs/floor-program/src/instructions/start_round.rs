@@ -2,7 +2,6 @@ use anchor_lang::prelude::*;
 use std::collections::BTreeSet;
 
 use crate::errors::FloorError;
-use crate::nft_utils::verify_aat_nft_and_get_allocation;
 use crate::seeds::LOBBY_ENTRY_SEED;
 use crate::state::LobbyEntry;
 
@@ -30,7 +29,6 @@ pub fn execute_round_start<'info>(
     let mut i = 0;
     while i + 2 < triplets.len() {
         let lobby_entry_info = &triplets[i];
-        let core_asset_info = &triplets[i + 2];
         i += 3;
 
         let lobby_entry: Account<LobbyEntry> = match Account::try_from(lobby_entry_info) {
@@ -57,13 +55,10 @@ pub fn execute_round_start<'info>(
             continue;
         }
 
-        let alloc = match verify_aat_nft_and_get_allocation(
-            core_asset_info,
-            &lobby_entry.investor,
-        ) {
-            Ok(a) if a > 0 => a,
-            _ => continue,
-        };
+        let alloc = lobby_entry.aat_volume;
+        if alloc == 0 {
+            continue;
+        }
 
         total_aat_volume = total_aat_volume
             .checked_add(alloc)
@@ -77,7 +72,6 @@ pub fn execute_round_start<'info>(
     let mut i = 0;
     while i + 2 < triplets.len() {
         let lobby_entry_info = &triplets[i];
-        let core_asset_info = &triplets[i + 2];
         i += 3;
 
         let mut lobby_entry: Account<LobbyEntry> = match Account::try_from(lobby_entry_info) {
@@ -99,13 +93,10 @@ pub fn execute_round_start<'info>(
             continue;
         }
 
-        let alloc = match verify_aat_nft_and_get_allocation(
-            core_asset_info,
-            &lobby_entry.investor,
-        ) {
-            Ok(a) if a > 0 => a,
-            _ => continue,
-        };
+        let alloc = lobby_entry.aat_volume;
+        if alloc == 0 {
+            continue;
+        }
 
         let usdc_locked_u128 = round_cap_usdc
             .checked_mul(alloc as u128)

@@ -61,7 +61,7 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
     require!(!ctx.accounts.contract_state.paused, FloorError::ContractPaused);
     require!(usdc_amount > 0, FloorError::ZeroAmount);
 
-    verify_aat_nft_and_get_allocation(
+    let aat_vol = verify_aat_nft_and_get_allocation(
         &ctx.accounts.aat_nft.to_account_info(),
         &ctx.accounts.investor.key(),
     )?;
@@ -72,6 +72,8 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
         lobby_entry.investor = ctx.accounts.investor.key();
         lobby_entry.bump = ctx.bumps.lobby_entry;
     }
+
+    lobby_entry.aat_volume = aat_vol;
 
     require!(
         lobby_entry.investor == ctx.accounts.investor.key(),
