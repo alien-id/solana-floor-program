@@ -5,8 +5,8 @@ use anchor_spl::token_interface::{
 
 use crate::errors::FloorError;
 use crate::nft_utils::verify_aat_nft_and_get_allocation;
-use crate::seeds::{CONTRACT_STATE_SEED, LOBBY_ENTRY_SEED, USDC_VAULT_SEED};
-use crate::state::{LobbyEntry, ProgramState};
+use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, USDC_VAULT_SEED};
+use crate::state::{InvestorPool, InvestorRecord, ProgramState, MAX_INVESTORS};
 
 #[derive(Accounts)]
 pub struct DepositUsdc<'info> {
@@ -16,20 +16,17 @@ pub struct DepositUsdc<'info> {
     #[account(
         mut,
         seeds = [CONTRACT_STATE_SEED],
-        bump = contract_state.bump,
-    )]
-    pub contract_state: Account<'info, ProgramState>,
-
-    #[account(
-        init_if_needed,
-        payer = investor,
-        space = 8 + LobbyEntry::INIT_SPACE,
-        seeds = [LOBBY_ENTRY_SEED, investor.key().as_ref()],
         bump,
     )]
-    pub lobby_entry: Account<'info, LobbyEntry>,
+    pub contract_state: AccountLoader<'info, ProgramState>,
 
-    #[account(constraint = usdc_mint.key() == contract_state.usdc_mint @ FloorError::InvalidMint)]
+    #[account(
+        mut,
+        seeds = [INVESTOR_POOL_SEED],
+        bump,
+    )]
+    pub investor_pool: AccountLoader<'info, InvestorPool>,
+
     pub usdc_mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
@@ -43,7 +40,7 @@ pub struct DepositUsdc<'info> {
     #[account(
         mut,
         seeds = [USDC_VAULT_SEED],
-        bump = contract_state.usdc_vault_bump,
+        bump,
         token::mint = usdc_mint,
         token::authority = contract_state,
         token::token_program = usdc_token_program,
@@ -58,27 +55,33 @@ pub struct DepositUsdc<'info> {
 }
 
 pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
-    require!(!ctx.accounts.contract_state.paused, FloorError::ContractPaused);
-    require!(usdc_amount > 0, FloorError::ZeroAmount);
+    let usdc_decimals;
+    let usdc_mint_key;
+    {
+        let state = ctx.accounts.contract_state.load()?;
+        require!(state.paused == 0, FloorError::ContractPaused);
+        require!(usdc_amount > 0, FloorError::ZeroAmount);
+        usdc_mint_key = state.usdc_mint;
+        usdc_decimals = ctx.accounts.usdc_mint.decimals;
+    }
+    require!(ctx.accounts.usdc_mint.key() == usdc_mint_key, FloorError::InvalidMint);
 
     let aat_vol = verify_aat_nft_and_get_allocation(
         &ctx.accounts.aat_nft.to_account_info(),
         &ctx.accounts.investor.key(),
     )?;
 
-    let lobby_entry = &mut ctx.accounts.lobby_entry;
+    let investor_key = ctx.accounts.investor.key();
 
-    if lobby_entry.investor == Pubkey::default() {
-        lobby_entry.investor = ctx.accounts.investor.key();
-        lobby_entry.bump = ctx.bumps.lobby_entry;
+    {
+        let pool = ctx.accounts.investor_pool.load()?;
+        let count = pool.count as usize;
+        require!(
+            count < MAX_INVESTORS
+                || pool.investors[..count].iter().any(|r| r.investor == investor_key),
+            FloorError::InvestorPoolFull
+        );
     }
-
-    lobby_entry.aat_volume = aat_vol;
-
-    require!(
-        lobby_entry.investor == ctx.accounts.investor.key(),
-        FloorError::InvalidInvestor
-    );
 
     transfer_checked(
         CpiContext::new(
@@ -91,17 +94,36 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
             },
         ),
         usdc_amount,
-        ctx.accounts.usdc_mint.decimals,
+        usdc_decimals,
     )?;
 
-    lobby_entry.usdc_deposited = lobby_entry
+    let mut pool = ctx.accounts.investor_pool.load_mut()?;
+    let count = pool.count as usize;
+    let record = match pool.investors[..count].iter_mut().find(|r| r.investor == investor_key) {
+        Some(r) => r,
+        None => {
+            let idx = count;
+            pool.investors[idx] = InvestorRecord {
+                investor: investor_key,
+                usdc_deposited: 0,
+                usdc_locked_current_round: 0,
+                usdc_committed: 0,
+                waln_purchased_total: 0,
+                aat_volume: 0,
+            };
+            pool.count += 1;
+            &mut pool.investors[idx]
+        }
+    };
+
+    record.aat_volume = aat_vol;
+    record.usdc_deposited = record
         .usdc_deposited
         .checked_add(usdc_amount)
         .ok_or(FloorError::ArithmeticOverflow)?;
 
-    ctx.accounts.contract_state.total_usdc_in_lobby = ctx
-        .accounts
-        .contract_state
+    let mut state = ctx.accounts.contract_state.load_mut()?;
+    state.total_usdc_in_lobby = state
         .total_usdc_in_lobby
         .checked_add(usdc_amount)
         .ok_or(FloorError::ArithmeticOverflow)?;

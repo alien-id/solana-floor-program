@@ -27,10 +27,9 @@ pub struct MintAatNft<'info> {
     #[account(
         mut,
         seeds = [CONTRACT_STATE_SEED],
-        bump = contract_state.bump,
-        constraint = contract_state.admin == admin.key() @ FloorError::Unauthorized,
+        bump,
     )]
-    pub contract_state: Box<Account<'info, ProgramState>>,
+    pub contract_state: AccountLoader<'info, ProgramState>,
 
     /// CHECK: investor wallet that will receive the NFT
     pub investor: UncheckedAccount<'info>,
@@ -56,13 +55,18 @@ pub struct MintAatNft<'info> {
 pub const MAX_TOTAL_AAT_VOLUME: u64 = 1_000_000;
 
 pub fn handler(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
-    let new_total = ctx.accounts.contract_state.total_aat_volume
-        .checked_add(aat_volume)
-        .ok_or(FloorError::ArithmeticOverflow)?;
-    require!(
-        new_total <= MAX_TOTAL_AAT_VOLUME,
-        FloorError::WalnAllocationLimitExceeded
-    );
+    {
+        let mut state = ctx.accounts.contract_state.load_mut()?;
+        require!(state.admin == ctx.accounts.admin.key(), FloorError::Unauthorized);
+        let new_total = state.total_aat_volume
+            .checked_add(aat_volume)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+        require!(
+            new_total <= MAX_TOTAL_AAT_VOLUME,
+            FloorError::WalnAllocationLimitExceeded
+        );
+        state.total_aat_volume = new_total;
+    }
 
     let space = match ExtensionType::try_calculate_account_len::<Mint>(&[
         ExtensionType::MetadataPointer,
@@ -209,8 +213,6 @@ pub fn handler(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
         AuthorityType::MintTokens,
         None
     )?;
-
-    ctx.accounts.contract_state.total_aat_volume = new_total;
 
     Ok(())
 }

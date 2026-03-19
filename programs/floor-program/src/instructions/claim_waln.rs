@@ -14,9 +14,9 @@ pub struct ClaimWaln<'info> {
 
     #[account(
         seeds = [CONTRACT_STATE_SEED],
-        bump = contract_state.bump,
+        bump,
     )]
-    pub contract_state: Account<'info, ProgramState>,
+    pub contract_state: AccountLoader<'info, ProgramState>,
 
     #[account(
         mut,
@@ -26,7 +26,6 @@ pub struct ClaimWaln<'info> {
     )]
     pub locked_waln: Account<'info, LockedWaln>,
 
-    #[account(constraint = waln_mint.key() == contract_state.waln_mint @ FloorError::InvalidMint)]
     pub waln_mint: InterfaceAccount<'info, Mint>,
 
     #[account(
@@ -40,7 +39,7 @@ pub struct ClaimWaln<'info> {
     #[account(
         mut,
         seeds = [WALN_VAULT_SEED],
-        bump = contract_state.waln_vault_bump,
+        bump,
         token::mint = waln_mint,
         token::authority = contract_state,
         token::token_program = waln_token_program,
@@ -51,7 +50,15 @@ pub struct ClaimWaln<'info> {
 }
 
 pub fn handler(ctx: Context<ClaimWaln>, _round_index: u64) -> Result<()> {
-    require!(!ctx.accounts.contract_state.paused, FloorError::ContractPaused);
+    let state_bump;
+    let waln_mint_key;
+    {
+        let state = ctx.accounts.contract_state.load()?;
+        require!(state.paused == 0, FloorError::ContractPaused);
+        state_bump = state.bump;
+        waln_mint_key = state.waln_mint;
+    }
+    require!(ctx.accounts.waln_mint.key() == waln_mint_key, FloorError::InvalidMint);
 
     let locked_waln = &mut ctx.accounts.locked_waln;
     require!(!locked_waln.claimed, FloorError::AlreadyClaimed);
@@ -63,8 +70,7 @@ pub fn handler(ctx: Context<ClaimWaln>, _round_index: u64) -> Result<()> {
     );
 
     let waln_amount = locked_waln.waln_amount;
-    let bump = ctx.accounts.contract_state.bump;
-    let seeds: &[&[u8]] = &[CONTRACT_STATE_SEED, &[bump]];
+    let seeds: &[&[u8]] = &[CONTRACT_STATE_SEED, &[state_bump]];
     let signer = &[seeds];
 
     transfer_checked(

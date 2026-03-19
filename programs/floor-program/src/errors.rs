@@ -38,4 +38,6 @@ pub enum FloorError {
     InvalidParameter,
     #[msg("Total wALN allocation across all NFTs would exceed 100,000 (100%)")]
     WalnAllocationLimitExceeded,
+    #[msg("Investor pool is full")]
+    InvestorPoolFull,
 }

@@ -7,10 +7,10 @@ use anchor_spl::token_interface::{
 use crate::errors::FloorError;
 use crate::instructions::start_round::execute_round_start;
 use crate::seeds::{
-    CONTRACT_STATE_SEED, LOBBY_ENTRY_SEED, LOCKED_WALN_SEED, ROUND_RECORD_SEED, USDC_VAULT_SEED,
+    CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, LOCKED_WALN_SEED, ROUND_RECORD_SEED, USDC_VAULT_SEED,
     WALN_VAULT_SEED,
 };
-use crate::state::{LobbyEntry, LockedWaln, ProgramState, RoundRecord};
+use crate::state::{InvestorPool, LockedWaln, ProgramState, RoundRecord};
 
 #[derive(Accounts)]
 pub struct SellWaln<'info> {
@@ -20,13 +20,18 @@ pub struct SellWaln<'info> {
     #[account(
         mut,
         seeds = [CONTRACT_STATE_SEED],
-        bump = contract_state.bump,
+        bump,
     )]
-    pub contract_state: Account<'info, ProgramState>,
+    pub contract_state: AccountLoader<'info, ProgramState>,
 
-    #[account(constraint = waln_mint.key() == contract_state.waln_mint @ FloorError::InvalidMint)]
+    #[account(
+        mut,
+        seeds = [INVESTOR_POOL_SEED],
+        bump,
+    )]
+    pub investor_pool: AccountLoader<'info, InvestorPool>,
+
     pub waln_mint: Box<InterfaceAccount<'info, Mint>>,
-    #[account(constraint = usdc_mint.key() == contract_state.usdc_mint @ FloorError::InvalidMint)]
     pub usdc_mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
@@ -48,7 +53,7 @@ pub struct SellWaln<'info> {
     #[account(
         mut,
         seeds = [WALN_VAULT_SEED],
-        bump = contract_state.waln_vault_bump,
+        bump,
         token::mint = waln_mint,
         token::authority = contract_state,
         token::token_program = waln_token_program,
@@ -58,7 +63,7 @@ pub struct SellWaln<'info> {
     #[account(
         mut,
         seeds = [USDC_VAULT_SEED],
-        bump = contract_state.usdc_vault_bump,
+        bump,
         token::mint = usdc_mint,
         token::authority = contract_state,
         token::token_program = usdc_token_program,
@@ -74,50 +79,42 @@ pub fn handler<'info>(
     ctx: Context<'_, '_, 'info, 'info, SellWaln<'info>>,
     waln_amount: u64,
 ) -> Result<()> {
-    {
-        let state = &ctx.accounts.contract_state;
-        require!(!state.paused, FloorError::ContractPaused);
-        require!(waln_amount > 0, FloorError::ZeroAmount);
-    }
-
     let waln_decimals = ctx.accounts.waln_mint.decimals;
+    let usdc_decimals = ctx.accounts.usdc_mint.decimals;
 
-    let round_index = ctx.accounts.contract_state.round_count;
-    let (round_record_pda, round_record_bump) = Pubkey::find_program_address(
-        &[ROUND_RECORD_SEED, &round_index.to_le_bytes()],
-        &crate::ID,
-    );
-
-    // Round Start (lazy) — executes when round_started = false.
-    if !ctx.accounts.contract_state.round_started {
-        let remaining = ctx.remaining_accounts;
-        require!(
-            remaining.len() >= 4 && (remaining.len() - 1) % 3 == 0,
-            FloorError::InvalidRemainingAccounts
-        );
-
-        require!(
-            round_record_pda == remaining[0].key(),
-            FloorError::InvalidRemainingAccounts
-        );
-
-        let investor_triplets = &remaining[1..];
-        let snapshot_price = ctx.accounts.contract_state.floor_price_usdc;
-        let snapshot_size = ctx.accounts.contract_state.round_size_waln;
-        let (_aat_vol, usdc_locked) = execute_round_start(
-            investor_triplets,
-            snapshot_size,
-            snapshot_price,
-            waln_decimals,
-        )?;
-        ctx.accounts.contract_state.current_round_floor_price = snapshot_price;
-        ctx.accounts.contract_state.current_round_size_waln = snapshot_size;
-        ctx.accounts.contract_state.total_usdc_locked_for_round = usdc_locked;
-        ctx.accounts.contract_state.round_started = true;
-    }
+    let round_index;
+    let floor_price_usdc;
+    let state_bump;
+    let current_round_size_waln;
+    let round_size_waln_val;
+    let floor_price_usdc_val;
 
     {
-        let state = &ctx.accounts.contract_state;
+        let mut state = ctx.accounts.contract_state.load_mut()?;
+        require!(state.paused == 0, FloorError::ContractPaused);
+        require!(waln_amount > 0, FloorError::ZeroAmount);
+        require!(ctx.accounts.waln_mint.key() == state.waln_mint, FloorError::InvalidMint);
+        require!(ctx.accounts.usdc_mint.key() == state.usdc_mint, FloorError::InvalidMint);
+
+        round_index = state.round_count;
+
+        if state.round_started == 0 {
+            let mut pool = ctx.accounts.investor_pool.load_mut()?;
+            let count = pool.count as usize;
+            let snapshot_price = state.floor_price_usdc;
+            let snapshot_size = state.round_size_waln;
+            let (_aat_vol, usdc_locked) = execute_round_start(
+                &mut pool.investors[..count],
+                snapshot_size,
+                snapshot_price,
+                waln_decimals,
+            )?;
+            state.current_round_floor_price = snapshot_price;
+            state.current_round_size_waln = snapshot_size;
+            state.total_usdc_locked_for_round = usdc_locked;
+            state.round_started = 1;
+        }
+
         let remaining_in_round = state
             .current_round_size_waln
             .checked_sub(state.current_round_waln)
@@ -126,11 +123,19 @@ pub fn handler<'info>(
             waln_amount <= remaining_in_round,
             FloorError::SellAmountExceedsRound
         );
+
+        floor_price_usdc = state.current_round_floor_price;
+        state_bump = state.bump;
+        current_round_size_waln = state.current_round_size_waln;
+        round_size_waln_val = state.round_size_waln;
+        floor_price_usdc_val = state.floor_price_usdc;
     }
 
-    let floor_price_usdc = ctx.accounts.contract_state.current_round_floor_price;
-    let usdc_decimals = ctx.accounts.usdc_mint.decimals;
-    let state_bump = ctx.accounts.contract_state.bump;
+    let (round_record_pda, round_record_bump) = Pubkey::find_program_address(
+        &[ROUND_RECORD_SEED, &round_index.to_le_bytes()],
+        &crate::ID,
+    );
+
     let waln_scale = 10_u128.pow(waln_decimals as u32);
 
     let usdc_out_u128 = (waln_amount as u128)
@@ -176,25 +181,21 @@ pub fn handler<'info>(
         usdc_decimals,
     )?;
 
-    let state = &mut ctx.accounts.contract_state;
+    let mut state = ctx.accounts.contract_state.load_mut()?;
     state.current_round_waln = state
         .current_round_waln
         .checked_add(waln_amount)
         .ok_or(FloorError::ArithmeticOverflow)?;
 
-    // Round End — executes when round is complete.
-    if state.current_round_waln >= state.current_round_size_waln {
+    if state.current_round_waln >= current_round_size_waln {
         let remaining = ctx.remaining_accounts;
         require!(
-            remaining.len() >= 4 && (remaining.len() - 1) % 3 == 0,
+            !remaining.is_empty(),
             FloorError::InvalidRemainingAccounts
         );
 
         let clock = Clock::get()?;
         let lock_period = state.lock_period_seconds;
-        let floor_price = state.current_round_floor_price;
-        let round_size_waln_val = state.round_size_waln;
-        let floor_price_usdc_val = state.floor_price_usdc;
         let dust_pool = state.waln_dust_carryover;
         let waln_in_round = state.current_round_waln;
 
@@ -204,7 +205,7 @@ pub fn handler<'info>(
             .ok_or(FloorError::ArithmeticOverflow)?;
 
         let round_record_info = &remaining[0];
-        let investor_triplets = &remaining[1..];
+        let locked_waln_accounts = &remaining[1..];
 
         require!(
             round_record_pda == round_record_info.key(),
@@ -216,47 +217,32 @@ pub fn handler<'info>(
         let mut participant_count: u32 = 0;
         let mut total_aat_volume_at_trigger: u64 = 0;
         let mut dust_given = false;
+        let mut locked_waln_idx: usize = 0;
 
-        for chunk in investor_triplets.chunks(3) {
-            if chunk.len() < 3 {
-                break;
-            }
-            let lobby_entry_info = &chunk[0];
-            let locked_waln_info = &chunk[1];
+        let locked_waln_space = 8 + LockedWaln::INIT_SPACE;
+        let locked_waln_rent = Rent::get()?.minimum_balance(locked_waln_space);
 
-            let mut lobby_entry: Account<LobbyEntry> =
-                match Account::try_from(lobby_entry_info) {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
+        let mut pool = ctx.accounts.investor_pool.load_mut()?;
+        let pool_count = pool.count as usize;
 
-            let expected_lobby_pda = Pubkey::create_program_address(
-                &[LOBBY_ENTRY_SEED, lobby_entry.investor.as_ref(), &[lobby_entry.bump]],
-                &crate::ID,
-            )
-            .map_err(|_| error!(FloorError::InvalidRemainingAccounts))?;
-            require!(
-                expected_lobby_pda == lobby_entry_info.key(),
-                FloorError::InvalidRemainingAccounts
-            );
-
-            if lobby_entry.usdc_locked_current_round == 0 {
+        for record in pool.investors[..pool_count].iter_mut() {
+            if record.usdc_locked_current_round == 0 {
                 continue;
             }
 
-            let investor = lobby_entry.investor;
+            let investor = record.investor;
 
-            let alloc = lobby_entry.aat_volume;
+            let alloc = record.aat_volume;
             total_aat_volume_at_trigger = total_aat_volume_at_trigger
                 .checked_add(alloc)
                 .ok_or(FloorError::ArithmeticOverflow)?;
 
-            let usdc_locked = lobby_entry.usdc_locked_current_round;
+            let usdc_locked = record.usdc_locked_current_round;
             let base_waln = u64::try_from(
                 (usdc_locked as u128)
                     .checked_mul(waln_scale)
                     .ok_or(FloorError::ArithmeticOverflow)?
-                    .checked_div(floor_price as u128)
+                    .checked_div(floor_price_usdc as u128)
                     .ok_or(FloorError::ArithmeticOverflow)?,
             )
             .map_err(|_| FloorError::ArithmeticOverflow)?;
@@ -272,15 +258,22 @@ pub fn handler<'info>(
                 .checked_add(bonus)
                 .ok_or(FloorError::ArithmeticOverflow)?;
 
-            lobby_entry.usdc_committed = lobby_entry
+            record.usdc_committed = record
                 .usdc_committed
                 .checked_add(usdc_locked)
                 .ok_or(FloorError::ArithmeticOverflow)?;
-            lobby_entry.usdc_locked_current_round = 0;
-            lobby_entry.waln_purchased_total = lobby_entry
+            record.usdc_locked_current_round = 0;
+            record.waln_purchased_total = record
                 .waln_purchased_total
                 .checked_add(waln_alloc)
                 .ok_or(FloorError::ArithmeticOverflow)?;
+
+            require!(
+                locked_waln_idx < locked_waln_accounts.len(),
+                FloorError::InvalidRemainingAccounts
+            );
+            let locked_waln_info = &locked_waln_accounts[locked_waln_idx];
+            locked_waln_idx += 1;
 
             let (locked_waln_pda, locked_waln_bump) = Pubkey::find_program_address(
                 &[
@@ -295,15 +288,12 @@ pub fn handler<'info>(
                 FloorError::InvalidRemainingAccounts
             );
 
-            let space = 8 + LockedWaln::INIT_SPACE;
-            let rent = Rent::get()?.minimum_balance(space);
-
             invoke_signed(
                 &system_instruction::create_account(
                     seller_info.key,
                     locked_waln_info.key,
-                    rent,
-                    space as u64,
+                    locked_waln_rent,
+                    locked_waln_space as u64,
                     &crate::ID,
                 ),
                 &[seller_info.clone(), locked_waln_info.clone(), system_program_info.clone()],
@@ -318,7 +308,7 @@ pub fn handler<'info>(
             {
                 let mut data = locked_waln_info.try_borrow_mut_data()?;
                 data[..8].copy_from_slice(&LockedWaln::DISCRIMINATOR);
-                let record = LockedWaln {
+                let locked_record = LockedWaln {
                     investor,
                     round_index,
                     waln_amount: waln_alloc,
@@ -327,7 +317,7 @@ pub fn handler<'info>(
                     bump: locked_waln_bump,
                 };
                 use anchor_lang::AnchorSerialize;
-                record.serialize(&mut &mut data[8..])?;
+                locked_record.serialize(&mut &mut data[8..])?;
             }
 
             total_usdc_spent = total_usdc_spent
@@ -339,8 +329,6 @@ pub fn handler<'info>(
             participant_count = participant_count
                 .checked_add(1)
                 .ok_or(FloorError::ArithmeticOverflow)?;
-
-            lobby_entry.exit(&crate::ID)?;
         }
 
         let round_record_space = 8 + RoundRecord::INIT_SPACE;
@@ -378,7 +366,6 @@ pub fn handler<'info>(
             record.serialize(&mut &mut rr_data[8..])?;
         }
 
-        let state = &mut ctx.accounts.contract_state;
         state.round_count = state
             .round_count
             .checked_add(1)
@@ -388,7 +375,7 @@ pub fn handler<'info>(
             .total_usdc_in_lobby
             .checked_sub(total_usdc_spent)
             .ok_or(FloorError::ArithmeticOverflow)?;
-        state.round_started = false;
+        state.round_started = 0;
         state.waln_dust_carryover = u64::try_from(
             (waln_in_round as u128)
                 .checked_add(dust_pool as u128)
@@ -398,8 +385,9 @@ pub fn handler<'info>(
         )
         .map_err(|_| FloorError::ArithmeticOverflow)?;
 
+        let pool_count = pool.count as usize;
         if let Ok((_aat_vol, usdc_locked)) = execute_round_start(
-            investor_triplets,
+            &mut pool.investors[..pool_count],
             round_size_waln_val,
             floor_price_usdc_val,
             waln_decimals,
@@ -407,7 +395,7 @@ pub fn handler<'info>(
             state.current_round_floor_price = floor_price_usdc_val;
             state.current_round_size_waln = round_size_waln_val;
             state.total_usdc_locked_for_round = usdc_locked;
-            state.round_started = true;
+            state.round_started = 1;
         }
     }
 

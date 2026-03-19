@@ -5,3 +5,4 @@ pub const WALN_VAULT_SEED: &[u8] = b"waln_vault";
 pub const LOCKED_WALN_SEED: &[u8] = b"locked_waln";
 pub const ROUND_RECORD_SEED: &[u8] = b"round_record";
 pub const AAT_NFT_SEED: &[u8] = b"aat_nft";
+pub const INVESTOR_POOL_SEED: &[u8] = b"investor_pool";

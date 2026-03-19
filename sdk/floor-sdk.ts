@@ -18,6 +18,15 @@ export interface RoundRecordData {
   bump: number;
 }
 
+export interface InvestorRecordData {
+  investor: PublicKey;
+  usdcDeposited: BN;
+  usdcLockedCurrentRound: BN;
+  usdcCommitted: BN;
+  walnPurchasedTotal: BN;
+  aatVolume: BN;
+}
+
 const TOKEN_2022_PROGRAM_ID = new PublicKey(
   "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 );
@@ -61,6 +70,14 @@ export class FloorSdk {
     );
   }
 
+  investorPoolPda(): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync(
+      [Buffer.from("investor_pool")],
+      this.programId
+    );
+  }
+
+  /** @deprecated Use investorPoolPda() + fetchInvestorPool() instead */
   lobbyEntryPda(investor: PublicKey): [PublicKey, number] {
     return PublicKey.findProgramAddressSync(
       [Buffer.from("lobby_entry"), investor.toBuffer()],
@@ -111,6 +128,25 @@ export class FloorSdk {
   }
 
   // ---------------------------------------------------------------------------
+  // Account fetchers
+  // ---------------------------------------------------------------------------
+
+  async fetchInvestorPool(): Promise<{ bump: number; count: number; investors: InvestorRecordData[] }> {
+    const [investorPool] = this.investorPoolPda();
+    const raw = await this.program.account.investorPool.fetch(investorPool) as any;
+    return {
+      bump: raw.bump,
+      count: raw.count,
+      investors: raw.investors.slice(0, raw.count),
+    };
+  }
+
+  async fetchInvestorRecord(investor: PublicKey): Promise<InvestorRecordData | null> {
+    const pool = await this.fetchInvestorPool();
+    return pool.investors.find((r) => r.investor.equals(investor)) ?? null;
+  }
+
+  // ---------------------------------------------------------------------------
   // Instructions
   // ---------------------------------------------------------------------------
 
@@ -127,6 +163,7 @@ export class FloorSdk {
     const [contractState] = this.contractStatePda();
     const [usdcVault] = this.usdcVaultPda();
     const [walnVault] = this.walnVaultPda();
+    const [investorPool] = this.investorPoolPda();
 
     return this.program.methods
       .initialize(args.floorPriceUsdc, args.roundSizeWaln, args.lockPeriodSeconds)
@@ -137,6 +174,7 @@ export class FloorSdk {
         walnMint: args.walnMint,
         usdcVault,
         walnVault,
+        investorPool,
         systemProgram: SystemProgram.programId,
         usdcTokenProgram: args.usdcTokenProgram ?? TOKEN_PROGRAM_ID,
         walnTokenProgram: args.walnTokenProgram ?? TOKEN_PROGRAM_ID,
@@ -180,14 +218,14 @@ export class FloorSdk {
   }): Promise<TransactionInstruction> {
     const [contractState] = this.contractStatePda();
     const [usdcVault] = this.usdcVaultPda();
-    const [lobbyEntry] = this.lobbyEntryPda(args.investor);
+    const [investorPool] = this.investorPoolPda();
 
     return this.program.methods
       .depositUsdc(args.usdcAmount)
       .accounts({
         investor: args.investor,
         contractState,
-        lobbyEntry,
+        investorPool,
         usdcMint: args.usdcMint,
         investorUsdcAccount: args.investorUsdcAccount,
         usdcVault,
@@ -207,14 +245,14 @@ export class FloorSdk {
   }): Promise<TransactionInstruction> {
     const [contractState] = this.contractStatePda();
     const [usdcVault] = this.usdcVaultPda();
-    const [lobbyEntry] = this.lobbyEntryPda(args.investor);
+    const [investorPool] = this.investorPoolPda();
 
     return this.program.methods
       .withdrawUsdc(args.amount)
       .accounts({
         investor: args.investor,
         contractState,
-        lobbyEntry,
+        investorPool,
         usdcMint: args.usdcMint,
         investorUsdcAccount: args.investorUsdcAccount,
         usdcVault,
@@ -223,6 +261,15 @@ export class FloorSdk {
       .instruction();
   }
 
+  /**
+   * Build a sellWaln instruction.
+   *
+   * roundTriggerAccounts format (new architecture):
+   *   [roundRecord, lockedWaln_investor1, lockedWaln_investor2, ...]
+   *
+   * Only needed when the sell will trigger round-end (current_round_waln + amount >= round_size).
+   * investor_pool is always passed as a named account (not remaining accounts).
+   */
   async sellWalnIx(args: {
     seller: PublicKey;
     sellerWalnAccount: PublicKey;
@@ -237,12 +284,14 @@ export class FloorSdk {
     const [contractState] = this.contractStatePda();
     const [walnVault] = this.walnVaultPda();
     const [usdcVault] = this.usdcVaultPda();
+    const [investorPool] = this.investorPoolPda();
 
     return this.program.methods
       .sellWaln(args.walnAmount)
       .accounts({
         seller: args.seller,
         contractState,
+        investorPool,
         walnMint: args.walnMint,
         usdcMint: args.usdcMint,
         sellerWalnAccount: args.sellerWalnAccount,

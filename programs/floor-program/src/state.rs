@@ -1,7 +1,8 @@
 use anchor_lang::prelude::*;
 
-#[account]
-#[derive(InitSpace)]
+pub const MAX_INVESTORS: usize = 140;
+
+#[account(zero_copy)]
 pub struct ProgramState {
     pub admin: Pubkey,
     pub usdc_mint: Pubkey,
@@ -16,16 +17,17 @@ pub struct ProgramState {
     pub lock_period_seconds: i64,
     pub current_round_floor_price: u64,
     pub current_round_size_waln: u64,
-    pub paused: bool,
-    pub round_started: bool,
+    pub total_aat_volume: u64,
+    pub waln_dust_carryover: u64,
+    pub total_usdc_locked_for_round: u64,
+    pub paused: u8,
+    pub round_started: u8,
     pub bump: u8,
     pub usdc_vault_bump: u8,
     pub waln_vault_bump: u8,
-    pub total_aat_volume: u64,
     pub waln_decimals: u8,
     pub usdc_decimals: u8,
-    pub waln_dust_carryover: u64,
-    pub total_usdc_locked_for_round: u64,
+    pub _padding: [u8; 1],
 }
 
 #[account]
@@ -53,6 +55,24 @@ pub struct LockedWaln {
 
 #[account]
 pub struct AatNftAuthority {}
+
+#[zero_copy]
+pub struct InvestorRecord {
+    pub investor: Pubkey,
+    pub usdc_deposited: u64,
+    pub usdc_locked_current_round: u64,
+    pub usdc_committed: u64,
+    pub waln_purchased_total: u64,
+    pub aat_volume: u64,
+}
+
+#[account(zero_copy)]
+pub struct InvestorPool {
+    pub count: u32,
+    pub bump: u8,
+    pub _padding: [u8; 3],
+    pub investors: [InvestorRecord; MAX_INVESTORS],
+}
 
 #[account]
 #[derive(InitSpace)]

@@ -1,8 +1,8 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
-use crate::seeds::{CONTRACT_STATE_SEED, USDC_VAULT_SEED, WALN_VAULT_SEED};
-use crate::state::ProgramState;
+use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, USDC_VAULT_SEED, WALN_VAULT_SEED};
+use crate::state::{InvestorPool, ProgramState};
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
@@ -12,11 +12,11 @@ pub struct Initialize<'info> {
     #[account(
         init,
         payer = admin,
-        space = 8 + ProgramState::INIT_SPACE,
+        space = 8 + std::mem::size_of::<ProgramState>(),
         seeds = [CONTRACT_STATE_SEED],
         bump,
     )]
-    pub contract_state: Account<'info, ProgramState>,
+    pub contract_state: AccountLoader<'info, ProgramState>,
 
     pub usdc_mint: InterfaceAccount<'info, Mint>,
     pub waln_mint: InterfaceAccount<'info, Mint>,
@@ -43,6 +43,15 @@ pub struct Initialize<'info> {
     )]
     pub waln_vault: InterfaceAccount<'info, TokenAccount>,
 
+    #[account(
+        init,
+        payer = admin,
+        space = 8 + std::mem::size_of::<InvestorPool>(),
+        seeds = [INVESTOR_POOL_SEED],
+        bump,
+    )]
+    pub investor_pool: AccountLoader<'info, InvestorPool>,
+
     pub system_program: Program<'info, System>,
     pub usdc_token_program: Interface<'info, TokenInterface>,
     pub waln_token_program: Interface<'info, TokenInterface>,
@@ -58,7 +67,7 @@ pub fn handler(
     require!(floor_price_usdc > 0, FloorError::InvalidParameter);
     require!(round_size_waln > 0, FloorError::InvalidParameter);
 
-    let state = &mut ctx.accounts.contract_state;
+    let mut state = ctx.accounts.contract_state.load_init()?;
     state.admin = ctx.accounts.admin.key();
     state.usdc_mint = ctx.accounts.usdc_mint.key();
     state.waln_mint = ctx.accounts.waln_mint.key();
@@ -72,8 +81,8 @@ pub fn handler(
     state.current_round_waln = 0;
     state.total_usdc_in_lobby = 0;
     state.round_count = 0;
-    state.paused = false;
-    state.round_started = false;
+    state.paused = 0;
+    state.round_started = 0;
     state.bump = ctx.bumps.contract_state;
     state.usdc_vault_bump = ctx.bumps.usdc_vault;
     state.waln_vault_bump = ctx.bumps.waln_vault;
@@ -81,5 +90,10 @@ pub fn handler(
     state.usdc_decimals = ctx.accounts.usdc_mint.decimals;
     state.waln_dust_carryover = 0;
     state.total_usdc_locked_for_round = 0;
+
+    let mut pool = ctx.accounts.investor_pool.load_init()?;
+    pool.bump = ctx.bumps.investor_pool;
+    pool.count = 0;
+
     Ok(())
 }
