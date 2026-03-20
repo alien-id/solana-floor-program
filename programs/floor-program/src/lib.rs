@@ -44,6 +44,10 @@ pub mod floor_program {
         admin::set_paused(ctx, paused)
     }
 
+    pub fn cancel_round(ctx: Context<CancelRound>) -> Result<()> {
+        admin::cancel_round(ctx)
+    }
+
     pub fn fund_treasury(ctx: Context<FundTreasury>, amount: u64) -> Result<()> {
         admin::fund_treasury(ctx, amount)
     }

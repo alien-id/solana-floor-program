@@ -383,6 +383,7 @@ export class FloorSdk {
 
   admin(adminPubkey: PublicKey) {
     const [contractState] = this.contractStatePda();
+    const [investorPool] = this.investorPoolPda();
     const accounts = { admin: adminPubkey, contractState };
 
     return {
@@ -396,6 +397,8 @@ export class FloorSdk {
         this.program.methods.setPaused(paused).accounts(accounts).instruction(),
       fundTreasury: (amount: BN): Promise<TransactionInstruction> =>
         this.program.methods.fundTreasury(amount).accounts(accounts).instruction(),
+      cancelRound: (): Promise<TransactionInstruction> =>
+        this.program.methods.cancelRound().accounts({ admin: adminPubkey, contractState, investorPool }).instruction(),
     };
   }
 

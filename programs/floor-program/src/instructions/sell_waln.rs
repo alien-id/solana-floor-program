@@ -426,6 +426,9 @@ pub fn handler<'info>(
                 Err(ref e) if e == &FloorError::NoEligibleInvestors.into() => {
                     msg!("Auto-start skipped: no eligible investors");
                 }
+                Err(ref e) if e == &FloorError::InsufficientDepositsForRound.into() => {
+                    msg!("Auto-start skipped: insufficient investor deposits to cover round");
+                }
                 Err(e) => {
                     return Err(e);
                 }

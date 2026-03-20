@@ -1,7 +1,6 @@
 use anchor_lang::prelude::*;
 
 use crate::errors::FloorError;
-use crate::instructions::mint_aat_nft::MAX_TOTAL_AAT_VOLUME;
 use crate::state::InvestorRecord;
 
 pub fn execute_round_start(
@@ -17,30 +16,44 @@ pub fn execute_round_start(
         .checked_div(waln_scale)
         .ok_or(FloorError::ArithmeticOverflow)?;
 
+    let min_deposit = round_cap_usdc / 2;
+
     let mut total_aat_volume: u64 = 0;
 
     for record in investors.iter() {
         if record.usdc_deposited == 0 || record.aat_volume == 0 {
             continue;
         }
-
-        let alloc = record.aat_volume;
-        let proportional_share = round_cap_usdc
-            .checked_mul(alloc as u128)
-            .ok_or(FloorError::ArithmeticOverflow)?
-            .checked_div(MAX_TOTAL_AAT_VOLUME as u128)
-            .ok_or(FloorError::ArithmeticOverflow)?;
-        let min_deposit = proportional_share / 2;
         if (record.usdc_deposited as u128) < min_deposit {
             continue;
         }
 
         total_aat_volume = total_aat_volume
-            .checked_add(alloc)
+            .checked_add(record.aat_volume)
             .ok_or(FloorError::ArithmeticOverflow)?;
     }
 
     require!(total_aat_volume > 0, FloorError::NoEligibleInvestors);
+
+    for record in investors.iter() {
+        if record.usdc_deposited == 0 || record.aat_volume == 0 {
+            continue;
+        }
+        if (record.usdc_deposited as u128) < min_deposit {
+            continue;
+        }
+
+        let required_lock = round_cap_usdc
+            .checked_mul(record.aat_volume as u128)
+            .ok_or(FloorError::ArithmeticOverflow)?
+            .checked_div(total_aat_volume as u128)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+
+        require!(
+            (record.usdc_deposited as u128) >= required_lock,
+            FloorError::InsufficientDepositsForRound
+        );
+    }
 
     let mut total_usdc_locked: u64 = 0;
 
@@ -48,20 +61,12 @@ pub fn execute_round_start(
         if record.usdc_deposited == 0 || record.aat_volume == 0 {
             continue;
         }
-
-        let alloc = record.aat_volume;
-        let proportional_share = round_cap_usdc
-            .checked_mul(alloc as u128)
-            .ok_or(FloorError::ArithmeticOverflow)?
-            .checked_div(MAX_TOTAL_AAT_VOLUME as u128)
-            .ok_or(FloorError::ArithmeticOverflow)?;
-        let min_deposit = proportional_share / 2;
         if (record.usdc_deposited as u128) < min_deposit {
             continue;
         }
 
         let usdc_locked_u128 = round_cap_usdc
-            .checked_mul(alloc as u128)
+            .checked_mul(record.aat_volume as u128)
             .ok_or(FloorError::ArithmeticOverflow)?
             .checked_div(total_aat_volume as u128)
             .ok_or(FloorError::ArithmeticOverflow)?;

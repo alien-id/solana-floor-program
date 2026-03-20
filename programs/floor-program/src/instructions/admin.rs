@@ -2,8 +2,8 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{program::invoke, system_instruction};
 
 use crate::errors::FloorError;
-use crate::seeds::{CONTRACT_STATE_SEED, TREASURY_SEED};
-use crate::state::ProgramState;
+use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, TREASURY_SEED};
+use crate::state::{InvestorPool, ProgramState};
 
 #[derive(Accounts)]
 pub struct AdminOnly<'info> {
@@ -68,6 +68,51 @@ pub struct FundTreasury<'info> {
     pub treasury: UncheckedAccount<'info>,
 
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CancelRound<'info> {
+    pub admin: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [CONTRACT_STATE_SEED],
+        bump,
+    )]
+    pub contract_state: AccountLoader<'info, ProgramState>,
+
+    #[account(
+        mut,
+        seeds = [INVESTOR_POOL_SEED],
+        bump,
+    )]
+    pub investor_pool: AccountLoader<'info, InvestorPool>,
+}
+
+pub fn cancel_round(ctx: Context<CancelRound>) -> Result<()> {
+    {
+        let mut state = ctx.accounts.contract_state.load_mut()?;
+        require!(state.admin == ctx.accounts.admin.key(), FloorError::Unauthorized);
+        require!(state.round_started == 1, FloorError::InvalidParameter);
+        state.round_started = 0;
+        state.current_round_waln = 0;
+        state.total_usdc_locked_for_round = 0;
+    }
+
+    let mut pool = ctx.accounts.investor_pool.load_mut()?;
+    let count = pool.count as usize;
+    for record in pool.investors[..count].iter_mut() {
+        if record.usdc_locked_current_round == 0 {
+            continue;
+        }
+        record.usdc_deposited = record
+            .usdc_deposited
+            .checked_add(record.usdc_locked_current_round)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+        record.usdc_locked_current_round = 0;
+    }
+
+    Ok(())
 }
 
 pub fn fund_treasury(ctx: Context<FundTreasury>, amount: u64) -> Result<()> {
