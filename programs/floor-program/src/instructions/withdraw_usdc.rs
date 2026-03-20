@@ -54,7 +54,6 @@ pub fn handler(ctx: Context<WithdrawUsdc>, amount: u64) -> Result<()> {
     let withdraw_amount;
     {
         let state = ctx.accounts.contract_state.load()?;
-        require!(state.paused == 0, FloorError::ContractPaused);
         require!(ctx.accounts.usdc_mint.key() == state.usdc_mint, FloorError::InvalidMint);
         state_bump = state.bump;
         usdc_decimals = ctx.accounts.usdc_mint.decimals;
@@ -69,11 +68,6 @@ pub fn handler(ctx: Context<WithdrawUsdc>, amount: u64) -> Result<()> {
             .iter_mut()
             .find(|r| r.investor == investor_key)
             .ok_or(FloorError::InvalidInvestor)?;
-
-        require!(
-            record.usdc_locked_current_round == 0,
-            FloorError::FundsLocked
-        );
 
         let available = record.usdc_deposited;
         withdraw_amount = if amount == u64::MAX { available } else { amount };

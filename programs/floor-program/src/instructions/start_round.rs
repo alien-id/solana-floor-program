@@ -16,6 +16,8 @@ pub fn execute_round_start(
         .checked_div(waln_scale)
         .ok_or(FloorError::ArithmeticOverflow)?;
 
+    require!(round_cap_usdc > 0, FloorError::InvalidParameter);
+
     let min_deposit = round_cap_usdc / 2;
 
     let mut eligible = [false; MAX_INVESTORS];

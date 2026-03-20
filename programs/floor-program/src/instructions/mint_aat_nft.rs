@@ -28,6 +28,7 @@ pub struct MintAatNft<'info> {
         mut,
         seeds = [CONTRACT_STATE_SEED],
         bump,
+        constraint = contract_state.load()?.admin == admin.key() @ FloorError::Unauthorized,
     )]
     pub contract_state: AccountLoader<'info, ProgramState>,
 
@@ -58,7 +59,6 @@ pub fn handler(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
     require!(aat_volume > 0, FloorError::InvalidParameter);
     {
         let mut state = ctx.accounts.contract_state.load_mut()?;
-        require!(state.admin == ctx.accounts.admin.key(), FloorError::Unauthorized);
         let new_total = state.total_aat_volume
             .checked_add(aat_volume)
             .ok_or(FloorError::ArithmeticOverflow)?;

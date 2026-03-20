@@ -443,6 +443,7 @@ pub fn handler<'info>(
                 }
                 Err(ref e) if e == &FloorError::NoEligibleInvestors.into() => {
                     msg!("Auto-start skipped: no eligible investors");
+                    state.total_usdc_locked_for_round = 0;
                 }
                 Err(e) => {
                     return Err(e);

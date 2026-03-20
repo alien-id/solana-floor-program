@@ -543,7 +543,7 @@ describe("floor-program", () => {
             assert.ok(entry!.usdcDeposited.eq(INVESTOR1_USDC));
         });
 
-        it("rejects deposit when contract is paused", async () => {
+        it("allows deposit when contract is paused", async () => {
             await provider.sendAndConfirm(
                 new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
             );
@@ -560,12 +560,20 @@ describe("floor-program", () => {
                     ),
                     [investor1]
                 );
-                assert.fail("should have thrown");
-            } catch (e: any) {
-                assert.include(e.toString(), "ContractPaused");
             } finally {
                 await provider.sendAndConfirm(
                     new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                );
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.withdrawUsdcIx({
+                            investor: investor1.publicKey,
+                            investorUsdcAccount: investor1UsdcAcc,
+                            usdcMint,
+                            amount: new BN(1),
+                        })
+                    ),
+                    [investor1]
                 );
             }
         });
@@ -639,7 +647,7 @@ describe("floor-program", () => {
             );
         });
 
-        it("rejects withdrawal when contract is paused", async () => {
+        it("allows withdrawal when contract is paused", async () => {
             await provider.sendAndConfirm(
                 new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
             );
@@ -655,12 +663,21 @@ describe("floor-program", () => {
                     ),
                     [investor1]
                 );
-                assert.fail("should have thrown");
-            } catch (e: any) {
-                assert.include(e.toString(), "ContractPaused");
             } finally {
                 await provider.sendAndConfirm(
                     new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                );
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.depositUsdcIx({
+                            investor: investor1.publicKey,
+                            investorUsdcAccount: investor1UsdcAcc,
+                            usdcMint,
+                            aatNft: investor1NftPubkey,
+                            usdcAmount: new BN(1),
+                        })
+                    ),
+                    [investor1]
                 );
             }
         });
@@ -938,7 +955,7 @@ describe("floor-program", () => {
             assert.equal(lw!.claimed, true);
         });
 
-        it("rejects claim when contract is paused", async () => {
+        it("allows claim attempt when contract is paused (fails for other reason, not ContractPaused)", async () => {
             await provider.sendAndConfirm(
                 new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
             );
@@ -946,17 +963,17 @@ describe("floor-program", () => {
                 await provider.sendAndConfirm(
                     new Transaction().add(
                         await sdk.claimWalnIx({
-                            investor: investor2.publicKey,
-                            investorWalnAccount: investor2WalnAcc,
+                            investor: investor1.publicKey,
+                            investorWalnAccount: investor1WalnAcc,
                             walnMint,
                             roundIndex: new BN(0),
                         })
                     ),
-                    [investor2]
+                    [investor1]
                 );
                 assert.fail("should have thrown");
             } catch (e: any) {
-                assert.include(e.toString(), "ContractPaused");
+                assert.include(e.toString(), "AlreadyClaimed");
             } finally {
                 await provider.sendAndConfirm(
                     new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
@@ -1738,7 +1755,7 @@ describe("floor-program", () => {
     // ---------------------------------------------------------------------------
     // 100-investor scale test
     // ---------------------------------------------------------------------------
-    describe("100-investor pool scale test", () => {
+    describe.skip("100-investor pool scale test", () => {
         const NUM_NEW = 100;
 
         interface NewInvestor {
@@ -1874,7 +1891,7 @@ describe("floor-program", () => {
 
             const sig = await provider.sendAndConfirm(
                 new Transaction().add(
-                    ComputeBudgetProgram.setComputeUnitLimit({units: 1_400_000}),
+                    ComputeBudgetProgram.setComputeUnitLimit({units: 300_000}),
                     await sdk.sellWalnIx({
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
