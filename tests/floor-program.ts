@@ -854,6 +854,7 @@ describe("floor-program", () => {
                 [seller]
             );
 
+            await sleep(1000);
             const triggerTx = await provider.connection.getTransaction(triggerSig, {
                 commitment: "confirmed",
                 maxSupportedTransactionVersion: 0
@@ -1737,7 +1738,7 @@ describe("floor-program", () => {
     // ---------------------------------------------------------------------------
     // 100-investor scale test
     // ---------------------------------------------------------------------------
-    describe.skip("100-investor pool scale test", () => {
+    describe("100-investor pool scale test", () => {
         const NUM_NEW = 100;
 
         interface NewInvestor {
@@ -1861,7 +1862,7 @@ describe("floor-program", () => {
             );
         });
 
-        it("triggers round end with all 102 investors (100 new + 2 original)", async () => {
+        it("triggers round end with all 101 investors (100 new + 1 original)", async () => {
             const stateBefore = await sdk.program.account.programState.fetch(contractState);
             assert.equal(stateBefore.roundStarted, 1, "round should be auto-started");
 
@@ -1890,20 +1891,21 @@ describe("floor-program", () => {
                 [seller]
             );
 
+            await sleep(1000);
             const txInfo = await provider.connection.getTransaction(sig, {
                 commitment: "confirmed",
                 maxSupportedTransactionVersion: 0,
             });
             console.log(
-                `    [CU] sell_waln 102-investor round trigger: ${txInfo?.meta?.computeUnitsConsumed}`
+                `    [CU] sell_waln 101-investor round trigger: ${txInfo?.meta?.computeUnitsConsumed}`
             );
 
             // Verify round record was created with 102 participants
             const rr = await sdk.fetchRoundRecord(roundIdx);
             assert.equal(
                 rr.participantCount,
-                102,
-                "all 102 investors (2 original + 100 new) should participate"
+                101,
+                "all 101 investors (1 original + 100 new) should participate"
             );
 
             // Verify round count incremented
@@ -1925,7 +1927,7 @@ describe("floor-program", () => {
 
             // Verify pool state via InvestorRecord entries
             const pool = await sdk.fetchInvestorPool();
-            assert.ok(pool.count >= 102, "pool should hold at least 102 investors");
+            assert.ok(pool.count >= 101, "pool should hold at least 101 investors");
         });
     });
 });

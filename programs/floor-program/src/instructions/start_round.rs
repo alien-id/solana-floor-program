@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::errors::FloorError;
-use crate::state::InvestorRecord;
+use crate::state::{InvestorRecord, MAX_INVESTORS};
 
 pub fn execute_round_start(
     investors: &mut [InvestorRecord],
@@ -18,50 +18,51 @@ pub fn execute_round_start(
 
     let min_deposit = round_cap_usdc / 2;
 
-    let mut total_aat_volume: u64 = 0;
-
-    for record in investors.iter() {
-        if record.usdc_deposited == 0 || record.aat_volume == 0 {
-            continue;
-        }
-        if (record.usdc_deposited as u128) < min_deposit {
-            continue;
-        }
-
-        total_aat_volume = total_aat_volume
-            .checked_add(record.aat_volume)
-            .ok_or(FloorError::ArithmeticOverflow)?;
+    let mut eligible = [false; MAX_INVESTORS];
+    for (i, record) in investors.iter().enumerate() {
+        eligible[i] = record.usdc_deposited > 0
+            && record.aat_volume > 0
+            && (record.usdc_deposited as u128) >= min_deposit;
     }
 
-    require!(total_aat_volume > 0, FloorError::NoEligibleInvestors);
-
-    for record in investors.iter() {
-        if record.usdc_deposited == 0 || record.aat_volume == 0 {
-            continue;
+    let mut total_aat_volume: u64;
+    loop {
+        total_aat_volume = 0;
+        for (i, record) in investors.iter().enumerate() {
+            if eligible[i] {
+                total_aat_volume = total_aat_volume
+                    .checked_add(record.aat_volume)
+                    .ok_or(FloorError::ArithmeticOverflow)?;
+            }
         }
-        if (record.usdc_deposited as u128) < min_deposit {
-            continue;
+
+        require!(total_aat_volume > 0, FloorError::NoEligibleInvestors);
+
+        let mut changed = false;
+        for (i, record) in investors.iter().enumerate() {
+            if !eligible[i] {
+                continue;
+            }
+            let required_lock = round_cap_usdc
+                .checked_mul(record.aat_volume as u128)
+                .ok_or(FloorError::ArithmeticOverflow)?
+                .checked_div(total_aat_volume as u128)
+                .ok_or(FloorError::ArithmeticOverflow)?;
+            if (record.usdc_deposited as u128) < required_lock {
+                eligible[i] = false;
+                changed = true;
+            }
         }
 
-        let required_lock = round_cap_usdc
-            .checked_mul(record.aat_volume as u128)
-            .ok_or(FloorError::ArithmeticOverflow)?
-            .checked_div(total_aat_volume as u128)
-            .ok_or(FloorError::ArithmeticOverflow)?;
-
-        require!(
-            (record.usdc_deposited as u128) >= required_lock,
-            FloorError::InsufficientDepositsForRound
-        );
+        if !changed {
+            break;
+        }
     }
 
     let mut total_usdc_locked: u64 = 0;
 
-    for record in investors.iter_mut() {
-        if record.usdc_deposited == 0 || record.aat_volume == 0 {
-            continue;
-        }
-        if (record.usdc_deposited as u128) < min_deposit {
+    for (i, record) in investors.iter_mut().enumerate() {
+        if !eligible[i] {
             continue;
         }
 

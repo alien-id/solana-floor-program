@@ -94,6 +94,7 @@ pub fn cancel_round(ctx: Context<CancelRound>) -> Result<()> {
         let mut state = ctx.accounts.contract_state.load_mut()?;
         require!(state.admin == ctx.accounts.admin.key(), FloorError::Unauthorized);
         require!(state.round_started == 1, FloorError::InvalidParameter);
+        require!(state.current_round_waln == 0, FloorError::InvalidParameter);
         state.round_started = 0;
         state.current_round_waln = 0;
         state.total_usdc_locked_for_round = 0;

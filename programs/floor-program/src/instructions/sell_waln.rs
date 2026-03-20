@@ -153,6 +153,8 @@ pub fn handler<'info>(
         .ok_or(FloorError::ArithmeticOverflow)?;
     let usdc_out = u64::try_from(usdc_out_u128).map_err(|_| FloorError::ArithmeticOverflow)?;
 
+    require!(usdc_out > 0, FloorError::ZeroAmount);
+
     let seller_info = ctx.accounts.seller.to_account_info();
     let treasury_info = ctx.accounts.treasury.to_account_info();
     let treasury_bump = ctx.bumps.treasury;
@@ -320,19 +322,27 @@ pub fn handler<'info>(
         let round_locked_waln_space = 8 + std::mem::size_of::<RoundLockedWaln>();
         let round_locked_waln_rent = Rent::get()?.minimum_balance(round_locked_waln_space);
 
+        let existing_locked_waln_lamports = round_locked_waln_info.lamports();
+        if existing_locked_waln_lamports < round_locked_waln_rent {
+            invoke_signed(
+                &system_instruction::transfer(
+                    treasury_info.key,
+                    round_locked_waln_info.key,
+                    round_locked_waln_rent - existing_locked_waln_lamports,
+                ),
+                &[treasury_info.clone(), round_locked_waln_info.clone(), system_program_info.clone()],
+                &[&[TREASURY_SEED, &[treasury_bump]]],
+            )?;
+        }
         invoke_signed(
-            &system_instruction::create_account(
-                treasury_info.key,
-                round_locked_waln_info.key,
-                round_locked_waln_rent,
-                round_locked_waln_space as u64,
-                &crate::ID,
-            ),
-            &[treasury_info.clone(), round_locked_waln_info.clone(), system_program_info.clone()],
-            &[
-                &[TREASURY_SEED, &[treasury_bump]],
-                &[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]],
-            ],
+            &system_instruction::allocate(round_locked_waln_info.key, round_locked_waln_space as u64),
+            &[round_locked_waln_info.clone(), system_program_info.clone()],
+            &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
+        )?;
+        invoke_signed(
+            &system_instruction::assign(round_locked_waln_info.key, &crate::ID),
+            &[round_locked_waln_info.clone(), system_program_info.clone()],
+            &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
         )?;
 
         {
@@ -358,19 +368,27 @@ pub fn handler<'info>(
         let round_record_space = 8 + RoundRecord::INIT_SPACE;
         let round_record_rent = Rent::get()?.minimum_balance(round_record_space);
 
+        let existing_round_record_lamports = round_record_info.lamports();
+        if existing_round_record_lamports < round_record_rent {
+            invoke_signed(
+                &system_instruction::transfer(
+                    treasury_info.key,
+                    round_record_info.key,
+                    round_record_rent - existing_round_record_lamports,
+                ),
+                &[treasury_info.clone(), round_record_info.clone(), system_program_info.clone()],
+                &[&[TREASURY_SEED, &[treasury_bump]]],
+            )?;
+        }
         invoke_signed(
-            &system_instruction::create_account(
-                treasury_info.key,
-                round_record_info.key,
-                round_record_rent,
-                round_record_space as u64,
-                &crate::ID,
-            ),
-            &[treasury_info.clone(), round_record_info.clone(), system_program_info.clone()],
-            &[
-                &[TREASURY_SEED, &[treasury_bump]],
-                &[ROUND_RECORD_SEED, &round_index.to_le_bytes(), &[round_record_bump]],
-            ],
+            &system_instruction::allocate(round_record_info.key, round_record_space as u64),
+            &[round_record_info.clone(), system_program_info.clone()],
+            &[&[ROUND_RECORD_SEED, &round_index.to_le_bytes(), &[round_record_bump]]],
+        )?;
+        invoke_signed(
+            &system_instruction::assign(round_record_info.key, &crate::ID),
+            &[round_record_info.clone(), system_program_info.clone()],
+            &[&[ROUND_RECORD_SEED, &round_index.to_le_bytes(), &[round_record_bump]]],
         )?;
 
         {
@@ -425,9 +443,6 @@ pub fn handler<'info>(
                 }
                 Err(ref e) if e == &FloorError::NoEligibleInvestors.into() => {
                     msg!("Auto-start skipped: no eligible investors");
-                }
-                Err(ref e) if e == &FloorError::InsufficientDepositsForRound.into() => {
-                    msg!("Auto-start skipped: insufficient investor deposits to cover round");
                 }
                 Err(e) => {
                     return Err(e);

@@ -55,6 +55,7 @@ pub struct MintAatNft<'info> {
 pub const MAX_TOTAL_AAT_VOLUME: u64 = 1_000_000;
 
 pub fn handler(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
+    require!(aat_volume > 0, FloorError::InvalidParameter);
     {
         let mut state = ctx.accounts.contract_state.load_mut()?;
         require!(state.admin == ctx.accounts.admin.key(), FloorError::Unauthorized);
@@ -84,16 +85,32 @@ pub fn handler(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
     let mint_signer_seeds: &[&[u8]] = &[AAT_NFT_SEED, investor_key.as_ref(), &[mint_bump]];
     let mint_signer: &[&[&[u8]]] = &[mint_signer_seeds];
 
+    let existing_mint_lamports = ctx.accounts.mint.lamports();
+    if existing_mint_lamports < lamports_required {
+        invoke(
+            &system_instruction::transfer(
+                &ctx.accounts.admin.key(),
+                &ctx.accounts.mint.key(),
+                lamports_required - existing_mint_lamports,
+            ),
+            &[
+                ctx.accounts.admin.to_account_info(),
+                ctx.accounts.mint.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+        )?;
+    }
     invoke_signed(
-        &system_instruction::create_account(
-            &ctx.accounts.admin.key(),
-            &ctx.accounts.mint.key(),
-            lamports_required,
-            space as u64,
-            &ctx.accounts.token_program.key(),
-        ),
+        &system_instruction::allocate(&ctx.accounts.mint.key(), space as u64),
         &[
-            ctx.accounts.admin.to_account_info(),
+            ctx.accounts.mint.to_account_info(),
+            ctx.accounts.system_program.to_account_info(),
+        ],
+        mint_signer,
+    )?;
+    invoke_signed(
+        &system_instruction::assign(&ctx.accounts.mint.key(), &ctx.accounts.token_program.key()),
+        &[
             ctx.accounts.mint.to_account_info(),
             ctx.accounts.system_program.to_account_info(),
         ],
