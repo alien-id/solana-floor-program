@@ -1,11 +1,13 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{program::invoke_signed, system_instruction};
+use anchor_lang::solana_program::{program::{invoke, invoke_signed}, system_instruction};
 use anchor_spl::token_interface::{
     transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
+use anchor_spl::token_2022::spl_token_2022::instruction::transfer_checked as build_transfer_checked_ix;
 
 use crate::errors::FloorError;
 use crate::instructions::start_round::execute_round_start;
+use crate::utils::{get_hook_program_id, validate_hook_accounts};
 use crate::seeds::{
     CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, ROUND_LOCKED_WALN_SEED, ROUND_RECORD_SEED,
     TREASURY_SEED, USDC_VAULT_SEED, WALN_VAULT_SEED,
@@ -78,6 +80,7 @@ pub struct SellWaln<'info> {
     )]
     pub treasury: UncheckedAccount<'info>,
 
+    #[account(address = anchor_spl::token_2022::ID)]
     pub waln_token_program: Interface<'info, TokenInterface>,
     pub usdc_token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
@@ -161,19 +164,51 @@ pub fn handler<'info>(
     let system_program_info = ctx.accounts.system_program.to_account_info();
     let contract_state_info = ctx.accounts.contract_state.to_account_info();
 
-    transfer_checked(
-        CpiContext::new(
-            ctx.accounts.waln_token_program.to_account_info(),
-            TransferChecked {
-                from: ctx.accounts.seller_waln_account.to_account_info(),
-                mint: ctx.accounts.waln_mint.to_account_info(),
-                to: ctx.accounts.waln_vault.to_account_info(),
-                authority: seller_info.clone(),
-            },
-        ),
+    let hook_offset: usize;
+    if let Ok(hook_program_id) = get_hook_program_id(&ctx.accounts.waln_mint.to_account_info()) {
+        validate_hook_accounts(
+            &ctx.remaining_accounts[..8],
+            &ctx.accounts.waln_mint.key(),
+            &ctx.accounts.seller.key(),
+            &hook_program_id,
+        )?;
+        hook_offset = 8;
+    } else {
+        hook_offset = 0;
+    }
+
+    let hook_accounts = &ctx.remaining_accounts[..hook_offset];
+
+    let mut ix = build_transfer_checked_ix(
+        &ctx.accounts.waln_token_program.key(),
+        &ctx.accounts.seller_waln_account.key(),
+        &ctx.accounts.waln_mint.key(),
+        &ctx.accounts.waln_vault.key(),
+        &ctx.accounts.seller.key(),
+        &[],
         waln_amount,
         waln_decimals,
     )?;
+
+    for acc in hook_accounts.iter() {
+        ix.accounts.push(AccountMeta {
+            pubkey: acc.key(),
+            is_signer: acc.is_signer,
+            is_writable: acc.is_writable,
+        });
+    }
+
+    let mut account_infos = vec![
+        ctx.accounts.seller_waln_account.to_account_info(),
+        ctx.accounts.waln_mint.to_account_info(),
+        ctx.accounts.waln_vault.to_account_info(),
+        seller_info.clone(),
+    ];
+    for acc in hook_accounts.iter() {
+        account_infos.push(acc.clone());
+    }
+
+    invoke(&ix, &account_infos)?;
 
     let seeds: &[&[u8]] = &[CONTRACT_STATE_SEED, &[state_bump]];
     let signer = &[seeds];
@@ -200,7 +235,7 @@ pub fn handler<'info>(
         .ok_or(FloorError::ArithmeticOverflow)?;
 
     if state.current_round_waln >= current_round_size_waln {
-        let remaining = ctx.remaining_accounts;
+        let remaining = &ctx.remaining_accounts[hook_offset..];
         require!(
             remaining.len() >= 2,
             FloorError::InvalidRemainingAccounts

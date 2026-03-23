@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 
 pub mod errors;
 pub mod instructions;
-pub mod nft_utils;
+pub mod utils;
 pub mod seeds;
 pub mod state;
 
@@ -67,7 +67,10 @@ pub mod floor_program {
         sell_waln::handler(ctx, waln_amount)
     }
 
-    pub fn claim_waln(ctx: Context<ClaimWaln>, round_index: u64) -> Result<()> {
+    pub fn claim_waln<'info>(
+        ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>,
+        round_index: u64,
+    ) -> Result<()> {
         claim_waln::handler(ctx, round_index)
     }
 

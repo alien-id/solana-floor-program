@@ -19,5 +19,13 @@ wallet = "~/.config/solana/id.json"
 bind_address = "127.0.0.1"
 deactivate_feature = ["CxeBn9PVeeXbmjbNwLv6U4C6svNxnC4JX6mfkvgeMocM"]
 
+[[test.genesis]]
+address = "BBuax7pfatrjWLx2KLNrKopdQz9eLmtDcC93wughEP7F"
+program = "binaries/alien_id_transfer_hook.so"
+
+[[test.genesis]]
+address = "22zoJMtdu4tQc2PzL74ZUT7FrwgB1Udec8DdW4yw4BdG"
+program = "binaries/solana_attestation_service.so"
+
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/floor-program.ts"

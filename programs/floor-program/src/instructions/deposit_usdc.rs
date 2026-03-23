@@ -4,7 +4,7 @@ use anchor_spl::token_interface::{
 };
 
 use crate::errors::FloorError;
-use crate::nft_utils::verify_aat_nft_and_get_allocation;
+use crate::utils::verify_aat_nft_and_get_allocation;
 use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, USDC_VAULT_SEED};
 use crate::state::{InvestorPool, InvestorRecord, ProgramState, MAX_INVESTORS};
 

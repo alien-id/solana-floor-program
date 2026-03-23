@@ -4,7 +4,9 @@ import {
     ComputeBudgetProgram,
     Keypair,
     PublicKey,
+    SystemProgram,
     Transaction,
+    sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import {
     createTransferInstruction,
@@ -19,7 +21,18 @@ import {
     mintTokensTo,
     getTokenBalance,
     sleep,
+    createToken2022MintWithTransferHook,
 } from "./helpers";
+import {
+    deriveCredentialPda,
+    deriveSchemaPda,
+    deriveAttestationPda,
+    getCreateCredentialInstruction,
+    getCreateSchemaInstruction,
+    getCreateAttestationInstruction,
+    serializeAttestationData,
+} from "sas-lib";
+import { address } from "@solana/kit";
 
 const USDC_DECIMALS = 6;
 const WALN_DECIMALS = 9;
@@ -35,6 +48,25 @@ const INVESTOR2_USDC = new BN(5_000 * USDC_UNIT);
 
 const SELL_AMOUNT_PARTIAL = new BN(100 * WALN_UNIT);
 const SELL_AMOUNT_TRIGGER = new BN(100 * WALN_UNIT);
+
+const ALIEN_ID_HOOK_PROGRAM_ID = new PublicKey("BBuax7pfatrjWLx2KLNrKopdQz9eLmtDcC93wughEP7F");
+const SAS_PROGRAM_ID = new PublicKey("22zoJMtdu4tQc2PzL74ZUT7FrwgB1Udec8DdW4yw4BdG");
+
+const SAS_CREDENTIAL_NAME = "floor_credential";
+const SAS_SCHEMA_NAME = "floor_schema";
+const SAS_SCHEMA_LAYOUT = new Uint8Array([12]);
+const SAS_SCHEMA_FIELD_NAMES = ["session_address"];
+
+function encodeFieldNames(names: string[]): Uint8Array {
+    const parts: Buffer[] = [];
+    for (const name of names) {
+        const b = Buffer.from(name, "utf8");
+        const len = Buffer.allocUnsafe(4);
+        len.writeUInt32LE(b.length, 0);
+        parts.push(len, b);
+    }
+    return Buffer.concat(parts);
+}
 
 describe("floor-program", () => {
     const provider = anchor.AnchorProvider.env();
@@ -68,6 +100,13 @@ describe("floor-program", () => {
     let walnVault: PublicKey;
     let investorPool: PublicKey;
 
+    // Token-2022 walnMint keypair (generated once, used throughout)
+    const walnMintKeypair = Keypair.generate();
+
+    // SAS credential / schema PDAs (set in before())
+    let credentialPda: PublicKey;
+    let schemaPda: PublicKey;
+
     // ---------------------------------------------------------------------------
     // Global setup
     // ---------------------------------------------------------------------------
@@ -93,7 +132,87 @@ describe("floor-program", () => {
         );
 
         usdcMint = await createTestMint(provider, USDC_DECIMALS);
-        walnMint = await createTestMint(provider, WALN_DECIMALS);
+
+        // ------------------------------------------------------------------
+        // SAS setup: derive PDAs via sas-lib, create credential + schema
+        // ------------------------------------------------------------------
+        const adminAddr = address(admin.publicKey.toBase58());
+
+        const [credentialPdaAddr] = await deriveCredentialPda({
+            authority: adminAddr,
+            name: SAS_CREDENTIAL_NAME,
+        });
+        credentialPda = new PublicKey(credentialPdaAddr);
+
+        const [schemaPdaAddr] = await deriveSchemaPda({
+            credential: credentialPdaAddr,
+            name: SAS_SCHEMA_NAME,
+            version: 1,
+        });
+        schemaPda = new PublicKey(schemaPdaAddr);
+
+        const createCredIx = getCreateCredentialInstruction({
+            payer: adminAddr as any,
+            authority: adminAddr as any,
+            credential: credentialPdaAddr,
+            signers: [adminAddr],
+            name: SAS_CREDENTIAL_NAME,
+        } as any);
+        await sendAndConfirmTransaction(
+            provider.connection,
+            new Transaction().add(new anchor.web3.TransactionInstruction({
+                keys: [
+                    { pubkey: admin.publicKey, isSigner: true, isWritable: true },
+                    { pubkey: credentialPda, isSigner: false, isWritable: true },
+                    { pubkey: admin.publicKey, isSigner: true, isWritable: false },
+                    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+                ],
+                programId: SAS_PROGRAM_ID,
+                data: Buffer.from(createCredIx.data),
+            })),
+            [admin],
+            { commitment: "confirmed" }
+        );
+
+        const createSchemaIx = getCreateSchemaInstruction({
+            payer: adminAddr as any,
+            authority: adminAddr as any,
+            credential: credentialPdaAddr,
+            schema: schemaPdaAddr,
+            name: SAS_SCHEMA_NAME,
+            description: "Schema for floor program seller verification",
+            layout: SAS_SCHEMA_LAYOUT,
+            fieldNames: SAS_SCHEMA_FIELD_NAMES,
+        } as any);
+        await sendAndConfirmTransaction(
+            provider.connection,
+            new Transaction().add(new anchor.web3.TransactionInstruction({
+                keys: [
+                    { pubkey: admin.publicKey, isSigner: true, isWritable: true },
+                    { pubkey: admin.publicKey, isSigner: true, isWritable: false },
+                    { pubkey: credentialPda, isSigner: false, isWritable: false },
+                    { pubkey: schemaPda, isSigner: false, isWritable: true },
+                    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+                ],
+                programId: SAS_PROGRAM_ID,
+                data: Buffer.from(createSchemaIx.data),
+            })),
+            [admin],
+            { commitment: "confirmed" }
+        );
+
+        // ------------------------------------------------------------------
+        // Create Token-2022 walnMint with alien_id transfer hook
+        // ------------------------------------------------------------------
+        walnMint = await createToken2022MintWithTransferHook(
+            provider,
+            walnMintKeypair,
+            WALN_DECIMALS,
+            ALIEN_ID_HOOK_PROGRAM_ID,
+            credentialPda,
+            schemaPda,
+            SAS_PROGRAM_ID
+        );
 
         // Create token accounts
         investor1UsdcAcc = await createTestTokenAccount(
@@ -109,17 +228,20 @@ describe("floor-program", () => {
         investor1WalnAcc = await createTestTokenAccount(
             provider,
             walnMint,
-            investor1.publicKey
+            investor1.publicKey,
+            TOKEN_2022_PROGRAM_ID
         );
         investor2WalnAcc = await createTestTokenAccount(
             provider,
             walnMint,
-            investor2.publicKey
+            investor2.publicKey,
+            TOKEN_2022_PROGRAM_ID
         );
         sellerWalnAcc = await createTestTokenAccount(
             provider,
             walnMint,
-            seller.publicKey
+            seller.publicKey,
+            TOKEN_2022_PROGRAM_ID
         );
         sellerUsdcAcc = await createTestTokenAccount(
             provider,
@@ -129,7 +251,7 @@ describe("floor-program", () => {
 
         await mintTokensTo(provider, usdcMint, investor1UsdcAcc, BigInt(10_000 * USDC_UNIT));
         await mintTokensTo(provider, usdcMint, investor2UsdcAcc, BigInt(10_000 * USDC_UNIT));
-        await mintTokensTo(provider, walnMint, sellerWalnAcc, BigInt(200 * WALN_UNIT));
+        await mintTokensTo(provider, walnMint, sellerWalnAcc, BigInt(200 * WALN_UNIT), TOKEN_2022_PROGRAM_ID);
 
         // ------------------------------------------------------------------
         // Initialize contract (must happen before mintAatNft)
@@ -143,8 +265,73 @@ describe("floor-program", () => {
                     floorPriceUsdc: FLOOR_PRICE,
                     roundSizeWaln: ROUND_SIZE,
                     lockPeriodSeconds: LOCK_PERIOD,
+                    walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                 })
             )
+        );
+
+        const hookProgram = new anchor.Program(
+            require("../idl/alien_id_transfer_hook.json"),
+            provider
+        );
+        const [hookConfigPda] = PublicKey.findProgramAddressSync(
+            [Buffer.from("config"), walnMint.toBuffer()],
+            ALIEN_ID_HOOK_PROGRAM_ID
+        );
+        const [whitelistEntryPda] = PublicKey.findProgramAddressSync(
+            [Buffer.from("whitelist"), walnMint.toBuffer(), contractState.toBuffer()],
+            ALIEN_ID_HOOK_PROGRAM_ID
+        );
+        await (hookProgram.methods as any)
+            .addToWhitelist(contractState)
+            .accounts({
+                authority: admin.publicKey,
+                config: hookConfigPda,
+                whitelistEntry: whitelistEntryPda,
+                mint: walnMint,
+                systemProgram: SystemProgram.programId,
+            })
+            .rpc({ commitment: "confirmed" });
+
+        const sellerAddr = address(seller.publicKey.toBase58());
+        const [sellerAttestationPdaAddr] = await deriveAttestationPda({
+            credential: credentialPdaAddr,
+            schema: schemaPdaAddr,
+            nonce: sellerAddr,
+        });
+        const sellerAttestationPda = new PublicKey(sellerAttestationPdaAddr);
+
+        const attestationExpiry = BigInt(Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60);
+        const attestationData = serializeAttestationData(
+            { layout: SAS_SCHEMA_LAYOUT, fieldNames: encodeFieldNames(SAS_SCHEMA_FIELD_NAMES) } as any,
+            { session_address: "000000010100000000000550ddb1afe5" }
+        );
+        const createAttestIx = getCreateAttestationInstruction({
+            payer: adminAddr as any,
+            authority: adminAddr as any,
+            credential: credentialPdaAddr,
+            schema: schemaPdaAddr,
+            attestation: sellerAttestationPdaAddr,
+            nonce: sellerAddr,
+            data: attestationData,
+            expiry: attestationExpiry,
+        } as any);
+        await sendAndConfirmTransaction(
+            provider.connection,
+            new Transaction().add(new anchor.web3.TransactionInstruction({
+                keys: [
+                    { pubkey: admin.publicKey, isSigner: true, isWritable: true },
+                    { pubkey: admin.publicKey, isSigner: true, isWritable: false },
+                    { pubkey: credentialPda, isSigner: false, isWritable: false },
+                    { pubkey: schemaPda, isSigner: false, isWritable: false },
+                    { pubkey: sellerAttestationPda, isSigner: false, isWritable: true },
+                    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+                ],
+                programId: SAS_PROGRAM_ID,
+                data: Buffer.from(createAttestIx.data),
+            })),
+            [admin],
+            { commitment: "confirmed" }
         );
 
         // ------------------------------------------------------------------
@@ -202,6 +389,7 @@ describe("floor-program", () => {
                             floorPriceUsdc: FLOOR_PRICE,
                             roundSizeWaln: ROUND_SIZE,
                             lockPeriodSeconds: LOCK_PERIOD,
+                            walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         })
                     )
                 );
@@ -762,7 +950,7 @@ describe("floor-program", () => {
             assert.equal(stateBefore.roundStarted, 0);
 
             const sellerUsdcBefore = await getTokenBalance(provider, sellerUsdcAcc);
-            const walnVaultBefore = await getTokenBalance(provider, walnVault);
+            const walnVaultBefore = await getTokenBalance(provider, walnVault, TOKEN_2022_PROGRAM_ID);
 
             const partialSig = await provider.sendAndConfirm(
                 new Transaction().add(
@@ -772,6 +960,7 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: SELL_AMOUNT_PARTIAL,
                     })
                 ),
@@ -786,7 +975,7 @@ describe("floor-program", () => {
             console.log(`    [CU] sell_waln PARTIAL (round-start, 2 investors): ${partialTx?.meta?.computeUnitsConsumed}`);
 
             const sellerUsdcAfter = await getTokenBalance(provider, sellerUsdcAcc);
-            const walnVaultAfter = await getTokenBalance(provider, walnVault);
+            const walnVaultAfter = await getTokenBalance(provider, walnVault, TOKEN_2022_PROGRAM_ID);
 
             assert.equal(
                 sellerUsdcAfter - sellerUsdcBefore,
@@ -826,6 +1015,7 @@ describe("floor-program", () => {
                             sellerUsdcAccount: sellerUsdcAcc,
                             walnMint,
                             usdcMint,
+                            walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                             walnAmount: new BN(1),
                         })
                     ),
@@ -861,6 +1051,7 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: SELL_AMOUNT_TRIGGER,
                         roundTriggerAccounts: [
                             {pubkey: roundRecord0, isWritable: true},
@@ -934,7 +1125,7 @@ describe("floor-program", () => {
             await sleep(500);
 
             const round0 = new BN(0);
-            const walnBefore = await getTokenBalance(provider, investor1WalnAcc);
+            const walnBefore = await getTokenBalance(provider, investor1WalnAcc, TOKEN_2022_PROGRAM_ID);
 
             await provider.sendAndConfirm(
                 new Transaction().add(
@@ -942,13 +1133,14 @@ describe("floor-program", () => {
                         investor: investor1.publicKey,
                         investorWalnAccount: investor1WalnAcc,
                         walnMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         roundIndex: round0,
                     })
                 ),
                 [investor1]
             );
 
-            const walnAfter = await getTokenBalance(provider, investor1WalnAcc);
+            const walnAfter = await getTokenBalance(provider, investor1WalnAcc, TOKEN_2022_PROGRAM_ID);
             assert.equal(walnAfter - walnBefore, 133_333_330_000n);
 
             const lw = await sdk.fetchInvestorAlloc(round0, investor1.publicKey);
@@ -966,6 +1158,7 @@ describe("floor-program", () => {
                             investor: investor1.publicKey,
                             investorWalnAccount: investor1WalnAcc,
                             walnMint,
+                            walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                             roundIndex: new BN(0),
                         })
                     ),
@@ -990,6 +1183,7 @@ describe("floor-program", () => {
                             investor: investor1.publicKey,
                             investorWalnAccount: investor1WalnAcc,
                             walnMint,
+                            walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                             roundIndex: round0,
                         })
                     ),
@@ -1003,7 +1197,7 @@ describe("floor-program", () => {
 
         it("investor2 claims their round-0 wALN", async () => {
             const round0 = new BN(0);
-            const walnBefore = await getTokenBalance(provider, investor2WalnAcc);
+            const walnBefore = await getTokenBalance(provider, investor2WalnAcc, TOKEN_2022_PROGRAM_ID);
 
             await provider.sendAndConfirm(
                 new Transaction().add(
@@ -1011,13 +1205,14 @@ describe("floor-program", () => {
                         investor: investor2.publicKey,
                         investorWalnAccount: investor2WalnAcc,
                         walnMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         roundIndex: round0,
                     })
                 ),
                 [investor2]
             );
 
-            const walnAfter = await getTokenBalance(provider, investor2WalnAcc);
+            const walnAfter = await getTokenBalance(provider, investor2WalnAcc, TOKEN_2022_PROGRAM_ID);
             assert.equal(walnAfter - walnBefore, 66_666_660_000n);
         });
     });
@@ -1077,7 +1272,7 @@ describe("floor-program", () => {
 
     describe("sell cap — no overshoot allowed", () => {
         before(async () => {
-            await mintTokensTo(provider, walnMint, sellerWalnAcc, BigInt(500 * WALN_UNIT));
+            await mintTokensTo(provider, walnMint, sellerWalnAcc, BigInt(500 * WALN_UNIT), TOKEN_2022_PROGRAM_ID);
 
             await mintTokensTo(provider, usdcMint, investor1UsdcAcc, BigInt(20_000 * USDC_UNIT));
             await mintTokensTo(provider, usdcMint, investor2UsdcAcc, BigInt(20_000 * USDC_UNIT));
@@ -1117,6 +1312,7 @@ describe("floor-program", () => {
                             sellerUsdcAccount: sellerUsdcAcc,
                             walnMint,
                             usdcMint,
+                            walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                             walnAmount: new BN(201 * WALN_UNIT),
                             roundTriggerAccounts: [
                                 {pubkey: sdk.roundRecordPda(new BN(2))[0], isWritable: true},
@@ -1146,6 +1342,7 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: new BN(100 * WALN_UNIT),
                     })
                 ),
@@ -1167,6 +1364,7 @@ describe("floor-program", () => {
                             sellerUsdcAccount: sellerUsdcAcc,
                             walnMint,
                             usdcMint,
+                            walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                             walnAmount: new BN(101 * WALN_UNIT),
                             roundTriggerAccounts: [
                                 {pubkey: sdk.roundRecordPda(new BN(2))[0], isWritable: true},
@@ -1197,6 +1395,7 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: new BN(100 * WALN_UNIT),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
@@ -1280,6 +1479,7 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: new BN(100 * WALN_UNIT),
                     })
                 ),
@@ -1311,6 +1511,7 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: new BN(100 * WALN_UNIT),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
@@ -1349,7 +1550,7 @@ describe("floor-program", () => {
                 )
             );
 
-            await mintTokensTo(provider, walnMint, sellerWalnAcc, BigInt(200 * WALN_UNIT));
+            await mintTokensTo(provider, walnMint, sellerWalnAcc, BigInt(200 * WALN_UNIT), TOKEN_2022_PROGRAM_ID);
             await mintTokensTo(provider, usdcMint, investor1UsdcAcc, BigInt(50_000 * USDC_UNIT));
             await mintTokensTo(provider, usdcMint, investor2UsdcAcc, BigInt(50_000 * USDC_UNIT));
             await provider.sendAndConfirm(
@@ -1398,6 +1599,7 @@ describe("floor-program", () => {
                             sellerUsdcAccount: sellerUsdcAcc,
                             walnMint,
                             usdcMint,
+                            walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                             walnAmount: new BN(201 * WALN_UNIT),
                         })
                     ),
@@ -1425,6 +1627,7 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: new BN(200 * WALN_UNIT),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
@@ -1464,7 +1667,7 @@ describe("floor-program", () => {
                 )
             );
 
-            await mintTokensTo(provider, walnMint, sellerWalnAcc, BigInt(1000 * WALN_UNIT));
+            await mintTokensTo(provider, walnMint, sellerWalnAcc, BigInt(1000 * WALN_UNIT), TOKEN_2022_PROGRAM_ID);
             await mintTokensTo(provider, usdcMint, investor1UsdcAcc, BigInt(100_000 * USDC_UNIT));
             await mintTokensTo(provider, usdcMint, investor2UsdcAcc, BigInt(100_000 * USDC_UNIT));
             await provider.sendAndConfirm(
@@ -1512,6 +1715,7 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
@@ -1563,6 +1767,7 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
@@ -1868,6 +2073,7 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: remainingToSell,
                         roundTriggerAccounts: [
                             {pubkey: roundRecordNow, isWritable: true},
@@ -1898,6 +2104,7 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: roundSizeWaln,
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},

@@ -7,6 +7,7 @@ import {
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import { FloorProgram } from "../target/types/floor_program";
+import {buildHookAccounts} from "./utils";
 
 export interface RoundRecordData {
   roundIndex: bigint;
@@ -292,7 +293,16 @@ export class FloorSdk {
     const [walnVault] = this.walnVaultPda();
     const [usdcVault] = this.usdcVaultPda();
     const [investorPool] = this.investorPoolPda();
-
+    const hookAccounts = await buildHookAccounts(
+      this.program.provider.connection,
+      args.seller,
+      args.walnMint,
+    );
+    const triggerAccounts = (args.roundTriggerAccounts ?? []).map((a) => ({
+      pubkey: a.pubkey,
+      isSigner: false,
+      isWritable: a.isWritable,
+    }));
     return this.program.methods
       .sellWaln(args.walnAmount)
       .accounts({
@@ -309,13 +319,7 @@ export class FloorSdk {
         usdcTokenProgram: args.usdcTokenProgram ?? TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
-      .remainingAccounts(
-        (args.roundTriggerAccounts ?? []).map((a) => ({
-          pubkey: a.pubkey,
-          isSigner: false,
-          isWritable: a.isWritable,
-        }))
-      )
+      .remainingAccounts([...hookAccounts, ...triggerAccounts])
       .instruction();
   }
 
@@ -329,6 +333,11 @@ export class FloorSdk {
     const [contractState] = this.contractStatePda();
     const [walnVault] = this.walnVaultPda();
     const [roundLockedWaln] = this.roundLockedWalnPda(args.roundIndex);
+    const hookAccounts = await buildHookAccounts(
+      this.program.provider.connection,
+      contractState,
+      args.walnMint,
+    );
 
     return this.program.methods
       .claimWaln(args.roundIndex)
@@ -341,6 +350,7 @@ export class FloorSdk {
         walnVault,
         walnTokenProgram: args.walnTokenProgram ?? TOKEN_PROGRAM_ID,
       })
+      .remainingAccounts(hookAccounts)
       .instruction();
   }
 
