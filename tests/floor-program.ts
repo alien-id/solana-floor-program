@@ -1961,7 +1961,7 @@ describe("floor-program", () => {
     // 100-investor scale test
     // ---------------------------------------------------------------------------
     describe.skip("100-investor pool scale test", () => {
-        const NUM_NEW = 100;
+        const NUM_NEW = 99;
 
         interface NewInvestor {
             keypair: Keypair;

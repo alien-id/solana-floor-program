@@ -54,7 +54,7 @@ pub struct ClaimWaln<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _round_index: u64) -> Result<()> {
+pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _round_index: u64, hook_bumps: [u8; 4]) -> Result<()> {
     let state_bump;
     let waln_mint_key;
     {
@@ -99,6 +99,7 @@ pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _rou
             &ctx.accounts.waln_mint.key(),
             &ctx.accounts.contract_state.key(),
             &hook_program_id,
+            hook_bumps,
         )?;
     }
 

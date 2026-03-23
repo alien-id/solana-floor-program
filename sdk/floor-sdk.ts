@@ -7,7 +7,7 @@ import {
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import { FloorProgram } from "../target/types/floor_program";
-import {buildHookAccounts} from "./utils";
+import {buildHookAccountsWithBumps} from "./utils";
 
 export interface RoundRecordData {
   roundIndex: bigint;
@@ -293,7 +293,7 @@ export class FloorSdk {
     const [walnVault] = this.walnVaultPda();
     const [usdcVault] = this.usdcVaultPda();
     const [investorPool] = this.investorPoolPda();
-    const hookAccounts = await buildHookAccounts(
+    const { accounts: hookAccounts, bumps: hookBumps } = await buildHookAccountsWithBumps(
       this.program.provider.connection,
       args.seller,
       args.walnMint,
@@ -304,7 +304,7 @@ export class FloorSdk {
       isWritable: a.isWritable,
     }));
     return this.program.methods
-      .sellWaln(args.walnAmount)
+      .sellWaln(args.walnAmount, hookBumps)
       .accounts({
         seller: args.seller,
         contractState,
@@ -333,14 +333,14 @@ export class FloorSdk {
     const [contractState] = this.contractStatePda();
     const [walnVault] = this.walnVaultPda();
     const [roundLockedWaln] = this.roundLockedWalnPda(args.roundIndex);
-    const hookAccounts = await buildHookAccounts(
+    const { accounts: hookAccounts, bumps: hookBumps } = await buildHookAccountsWithBumps(
       this.program.provider.connection,
       contractState,
       args.walnMint,
     );
 
     return this.program.methods
-      .claimWaln(args.roundIndex)
+      .claimWaln(args.roundIndex, hookBumps)
       .accounts({
         investor: args.investor,
         contractState,
