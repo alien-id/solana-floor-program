@@ -63,6 +63,9 @@ pub fn handle_info(program: &Program<Arc<Keypair>>) -> Result<()> {
     println!("\n=== Floor Program State ===\n");
     println!("Program ID:     {}", program_id);
     println!("Admin:          {}", state.admin);
+    if state.pending_admin != Pubkey::default() {
+        println!("Pending Admin:  {} (transfer in progress)", state.pending_admin);
+    }
     println!("USDC Mint:      {}", state.usdc_mint);
     println!("WALN Mint:      {}", state.waln_mint);
 
@@ -329,6 +332,50 @@ pub fn handle_fund_treasury(program: &Program<Arc<Keypair>>, amount_lamports: u6
         .send()?;
 
     println!("Transaction successful: {}", tx);
+    Ok(())
+}
+
+pub fn handle_transfer_authority(
+    program: &Program<Arc<Keypair>>,
+    new_admin: Pubkey,
+) -> Result<()> {
+    let program_id = program.id();
+    let (contract_state, _) = get_contract_state_address(&program_id);
+
+    println!("Initiating admin authority transfer to: {}", new_admin);
+
+    let tx = program
+        .request()
+        .accounts(floor_program::accounts::TransferAuthority {
+            admin: program.payer(),
+            new_admin,
+            contract_state,
+        })
+        .args(floor_program::instruction::TransferAuthority {})
+        .send()?;
+
+    println!("Transaction successful: {}", tx);
+    println!("New admin must call 'accept-authority' to complete the transfer.");
+    Ok(())
+}
+
+pub fn handle_accept_authority(program: &Program<Arc<Keypair>>) -> Result<()> {
+    let program_id = program.id();
+    let (contract_state, _) = get_contract_state_address(&program_id);
+
+    println!("Accepting admin authority transfer...");
+
+    let tx = program
+        .request()
+        .accounts(floor_program::accounts::AcceptAuthority {
+            pending_admin: program.payer(),
+            contract_state,
+        })
+        .args(floor_program::instruction::AcceptAuthority {})
+        .send()?;
+
+    println!("Transaction successful: {}", tx);
+    println!("Authority transfer complete. You are now the admin.");
     Ok(())
 }
 

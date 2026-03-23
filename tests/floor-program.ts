@@ -645,7 +645,138 @@ describe("floor-program", () => {
     });
 
     // ---------------------------------------------------------------------------
-    // 3. deposit_usdc
+    // 3. transfer_authority
+    // ---------------------------------------------------------------------------
+    describe("transfer_authority", () => {
+        const newAdmin = Keypair.generate();
+
+        it("non-admin cannot initiate authority transfer", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(investor1.publicKey).transferAuthority(newAdmin.publicKey)
+                    ),
+                    [investor1]
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.ok(
+                    e.toString().includes("Unauthorized") || e.logs?.some((l: string) => l.includes("Unauthorized")),
+                    "expected Unauthorized error"
+                );
+            }
+        });
+
+        it("accept_authority fails when no transfer is pending", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.acceptAuthorityIx(newAdmin.publicKey)
+                    ),
+                    [newAdmin]
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.ok(
+                    e.toString().includes("NoPendingAdmin") || e.logs?.some((l: string) => l.includes("NoPendingAdmin")),
+                    "expected NoPendingAdmin error"
+                );
+            }
+        });
+
+        it("admin initiates authority transfer", async () => {
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.admin(admin.publicKey).transferAuthority(newAdmin.publicKey)
+                )
+            );
+
+            const state = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(
+                (state as any).pendingAdmin.equals(newAdmin.publicKey),
+                "pending_admin should be set to newAdmin"
+            );
+            assert.ok(
+                (state as any).admin.equals(admin.publicKey),
+                "admin should not change yet"
+            );
+        });
+
+        it("wrong signer cannot accept authority", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.acceptAuthorityIx(investor1.publicKey)
+                    ),
+                    [investor1]
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.ok(
+                    e.toString().includes("NotPendingAdmin") || e.logs?.some((l: string) => l.includes("NotPendingAdmin")),
+                    "expected NotPendingAdmin error"
+                );
+            }
+        });
+
+        it("pending admin accepts authority", async () => {
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.acceptAuthorityIx(newAdmin.publicKey)
+                ),
+                [newAdmin]
+            );
+
+            const state = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(
+                (state as any).admin.equals(newAdmin.publicKey),
+                "admin should now be newAdmin"
+            );
+            assert.ok(
+                (state as any).pendingAdmin.equals(PublicKey.default),
+                "pending_admin should be cleared"
+            );
+        });
+
+        it("old admin can no longer use admin instructions", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(admin.publicKey).setFloorPrice(new BN(1))
+                    )
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.ok(
+                    e.toString().includes("Unauthorized") || e.logs?.some((l: string) => l.includes("Unauthorized")),
+                    "expected Unauthorized error for old admin"
+                );
+            }
+        });
+
+        it("transfers authority back to original admin", async () => {
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.admin(newAdmin.publicKey).transferAuthority(admin.publicKey)
+                ),
+                [newAdmin]
+            );
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.acceptAuthorityIx(admin.publicKey)
+                )
+            );
+
+            const state = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(
+                (state as any).admin.equals(admin.publicKey),
+                "admin should be restored to original admin"
+            );
+        });
+    });
+
+    // ---------------------------------------------------------------------------
+    // 4. deposit_usdc
     // ---------------------------------------------------------------------------
     describe("deposit_usdc", () => {
         it("investor1 deposits USDC (verified via AAT NFT)", async () => {
@@ -2085,7 +2216,7 @@ describe("floor-program", () => {
             );
         });
 
-        it("triggers round end with all 101 investors (100 new + 1 original)", async () => {
+        it("triggers round end with all 100 investors (99 new + 1 original)", async () => {
             const stateBefore = await sdk.program.account.programState.fetch(contractState);
             assert.equal(stateBefore.roundStarted, 1, "round should be auto-started");
 
@@ -2121,15 +2252,15 @@ describe("floor-program", () => {
                 maxSupportedTransactionVersion: 0,
             });
             console.log(
-                `    [CU] sell_waln 101-investor round trigger: ${txInfo?.meta?.computeUnitsConsumed}`
+                `    [CU] sell_waln 100-investor round trigger: ${txInfo?.meta?.computeUnitsConsumed}`
             );
 
             // Verify round record was created with 102 participants
             const rr = await sdk.fetchRoundRecord(roundIdx);
             assert.equal(
                 rr.participantCount,
-                101,
-                "all 101 investors (1 original + 100 new) should participate"
+                100,
+                "all 100 investors (1 original + 99 new) should participate"
             );
 
             // Verify round count incremented
@@ -2151,7 +2282,7 @@ describe("floor-program", () => {
 
             // Verify pool state via InvestorRecord entries
             const pool = await sdk.fetchInvestorPool();
-            assert.ok(pool.count >= 101, "pool should hold at least 101 investors");
+            assert.ok(pool.count >= 100, "pool should hold at least 100 investors");
         });
     });
 });

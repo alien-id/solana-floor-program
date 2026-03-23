@@ -46,4 +46,8 @@ pub enum FloorError {
     InvalidHookAccountsCount,
     #[msg("Invalid hook accounts")]
     InvalidHookAccounts,
+    #[msg("Signer is not the pending admin")]
+    NotPendingAdmin,
+    #[msg("No pending authority transfer in progress")]
+    NoPendingAdmin,
 }

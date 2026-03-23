@@ -409,7 +409,17 @@ export class FloorSdk {
         this.program.methods.fundTreasury(amount).accounts(accounts as any).instruction(),
       cancelRound: (): Promise<TransactionInstruction> =>
         this.program.methods.cancelRound().accounts({ admin: adminPubkey, contractState, investorPool } as any).instruction(),
+      transferAuthority: (newAdmin: PublicKey): Promise<TransactionInstruction> =>
+        this.program.methods.transferAuthority().accounts({ admin: adminPubkey, newAdmin, contractState } as any).instruction(),
     };
+  }
+
+  async acceptAuthorityIx(pendingAdmin: PublicKey): Promise<TransactionInstruction> {
+    const [contractState] = this.contractStatePda();
+    return this.program.methods
+      .acceptAuthority()
+      .accounts({ pendingAdmin, contractState } as any)
+      .instruction();
   }
 
   /**

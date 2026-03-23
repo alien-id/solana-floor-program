@@ -1,7 +1,7 @@
 use admin_cli::handlers::{
-    handle_cancel_round, handle_fund_treasury, handle_info, handle_initialize,
-    handle_mint_aat_nft, handle_set_floor_price, handle_set_lock_period, handle_set_paused,
-    handle_set_round_size,
+    handle_accept_authority, handle_cancel_round, handle_fund_treasury, handle_info,
+    handle_initialize, handle_mint_aat_nft, handle_set_floor_price, handle_set_lock_period,
+    handle_set_paused, handle_set_round_size, handle_transfer_authority,
 };
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
 use anchor_client::solana_sdk::pubkey::Pubkey;
@@ -72,6 +72,10 @@ enum Commands {
         investor: String,
         aat_volume: u64,
     },
+    TransferAuthority {
+        new_admin: String,
+    },
+    AcceptAuthority,
 }
 
 fn get_program_client(
@@ -176,6 +180,13 @@ fn main() -> Result<()> {
                 .map_err(|e| anyhow!("Invalid investor pubkey: {}", e))?;
             handle_mint_aat_nft(&program, investor, aat_volume)?
         }
+        Commands::TransferAuthority { new_admin } => {
+            let new_admin = new_admin
+                .parse::<Pubkey>()
+                .map_err(|e| anyhow!("Invalid new admin pubkey: {}", e))?;
+            handle_transfer_authority(&program, new_admin)?
+        }
+        Commands::AcceptAuthority => handle_accept_authority(&program)?,
     }
 
     Ok(())

@@ -6,10 +6,10 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-floor_program = "2xLWJmw5jyUuYcK5aSRWCGqpAk2jWMVYX4Tjn87mP27b"
+floor_program = "94Mtkpo6acpu4NifFtkRyEtGRPbh99RQWHqnEuqpzdWi"
 
 [programs.devnet]
-floor_program = "2xLWJmw5jyUuYcK5aSRWCGqpAk2jWMVYX4Tjn87mP27b"
+floor_program = "94Mtkpo6acpu4NifFtkRyEtGRPbh99RQWHqnEuqpzdWi"
 
 [registry]
 url = "https://api.apr.dev"

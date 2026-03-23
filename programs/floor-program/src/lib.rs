@@ -8,7 +8,7 @@ pub mod state;
 
 use instructions::*;
 
-declare_id!("2xLWJmw5jyUuYcK5aSRWCGqpAk2jWMVYX4Tjn87mP27b");
+declare_id!("94Mtkpo6acpu4NifFtkRyEtGRPbh99RQWHqnEuqpzdWi");
 
 #[program]
 pub mod floor_program {
@@ -78,5 +78,13 @@ pub mod floor_program {
 
     pub fn mint_aat_nft(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
         mint_aat_nft::handler(ctx, aat_volume)
+    }
+
+    pub fn transfer_authority(ctx: Context<TransferAuthority>) -> Result<()> {
+        transfer_authority::transfer_authority(ctx)
+    }
+
+    pub fn accept_authority(ctx: Context<AcceptAuthority>) -> Result<()> {
+        transfer_authority::accept_authority(ctx)
     }
 }

@@ -38,6 +38,7 @@ pub struct ProgramState {
     pub total_aat_volume: u64,
     pub waln_dust_carryover: u64,
     pub total_usdc_locked_for_round: u64,
+    pub pending_admin: Pubkey,
     pub paused: u8,
     pub round_started: u8,
     pub bump: u8,

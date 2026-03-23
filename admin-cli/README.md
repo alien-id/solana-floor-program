@@ -29,6 +29,8 @@ admin-cli [--keypair <PATH> | --keypair-base58-file <PATH>] [--cluster <CLUSTER_
 - `cancel-round` — cancel the current active round and refund locked USDC
 - `fund-treasury <LAMPORTS>` — send SOL to the treasury PDA for round account rent
 - `mint-aat-nft <INVESTOR_PUBKEY> <AAT_VOLUME>` — mint an AAT NFT for an investor
+- `transfer-authority <NEW_ADMIN_PUBKEY>` — initiate a two-step admin authority transfer to a new address (current admin only)
+- `accept-authority` — accept a pending admin authority transfer (new admin must sign)
 
 ## Examples
 - Show state on devnet:
@@ -47,6 +49,10 @@ admin-cli [--keypair <PATH> | --keypair-base58-file <PATH>] [--cluster <CLUSTER_
   - `admin-cli fund-treasury 100000000`
 - Mint AAT NFT for an investor:
   - `admin-cli mint-aat-nft <INVESTOR_PUBKEY> 1000`
+- Transfer admin authority to a new address:
+  - `admin-cli transfer-authority <NEW_ADMIN_PUBKEY>`
+- Accept pending authority transfer (run with new admin keypair):
+  - `admin-cli --keypair ~/.config/solana/new-admin.json accept-authority`
 - Run on mainnet with custom keypair:
   - `admin-cli --cluster mainnet --keypair ~/.config/solana/admin.json info`
 - Use a base58 keypair string from file:
