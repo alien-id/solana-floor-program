@@ -8,7 +8,7 @@ pub mod state;
 
 use instructions::*;
 
-declare_id!("CEwVmSxQGdVWZwQozZPnwKPtCK837efbs3X9fTMfxz2v");
+declare_id!("2xLWJmw5jyUuYcK5aSRWCGqpAk2jWMVYX4Tjn87mP27b");
 
 #[program]
 pub mod floor_program {

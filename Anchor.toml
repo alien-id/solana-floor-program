@@ -6,13 +6,16 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-floor_program = "CEwVmSxQGdVWZwQozZPnwKPtCK837efbs3X9fTMfxz2v"
+floor_program = "2xLWJmw5jyUuYcK5aSRWCGqpAk2jWMVYX4Tjn87mP27b"
+
+[programs.devnet]
+floor_program = "2xLWJmw5jyUuYcK5aSRWCGqpAk2jWMVYX4Tjn87mP27b"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [test.validator]
@@ -20,7 +23,7 @@ bind_address = "127.0.0.1"
 deactivate_feature = ["CxeBn9PVeeXbmjbNwLv6U4C6svNxnC4JX6mfkvgeMocM"]
 
 [[test.genesis]]
-address = "BBuax7pfatrjWLx2KLNrKopdQz9eLmtDcC93wughEP7F"
+address = "AXmwHw9zuXBv5vNc28BoPfm8MS9gR3zbR5EN9nWiLMm8"
 program = "binaries/alien_id_transfer_hook.so"
 
 [[test.genesis]]

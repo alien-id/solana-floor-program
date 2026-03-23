@@ -49,7 +49,7 @@ const INVESTOR2_USDC = new BN(5_000 * USDC_UNIT);
 const SELL_AMOUNT_PARTIAL = new BN(100 * WALN_UNIT);
 const SELL_AMOUNT_TRIGGER = new BN(100 * WALN_UNIT);
 
-const ALIEN_ID_HOOK_PROGRAM_ID = new PublicKey("BBuax7pfatrjWLx2KLNrKopdQz9eLmtDcC93wughEP7F");
+const ALIEN_ID_HOOK_PROGRAM_ID = new PublicKey("AXmwHw9zuXBv5vNc28BoPfm8MS9gR3zbR5EN9nWiLMm8");
 const SAS_PROGRAM_ID = new PublicKey("22zoJMtdu4tQc2PzL74ZUT7FrwgB1Udec8DdW4yw4BdG");
 
 const SAS_CREDENTIAL_NAME = "floor_credential";
