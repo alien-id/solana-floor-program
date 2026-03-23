@@ -1,5 +1,18 @@
 use anchor_lang::prelude::*;
 
+#[cfg(not(feature = "no-entrypoint"))]
+use solana_security_txt::security_txt;
+
+#[cfg(not(feature = "no-entrypoint"))]
+security_txt! {
+    name: "ALN Floor Contract",
+    project_url: "https://alien.org/",
+    contacts: "email:aliensol@eti.gg, twitter:@alienorg",
+    policy: "https://alien.org/sol-security-policy",
+    preferred_languages: "en",
+    source_code: "https://github.com/alien-id/solana-floor-program"
+}
+
 pub mod errors;
 pub mod instructions;
 pub mod utils;

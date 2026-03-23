@@ -26,6 +26,7 @@ anchor-spl = { version = "0.32.1", features = ["token_2022", "associated_token"]
 bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
 spl-token-2022 = { version = "8.0.1", features = ["no-entrypoint"] }
 spl-token-metadata-interface = { version = "0.7.0" }
+solana-security-txt = "1.1.2"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
