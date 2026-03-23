@@ -2,13 +2,13 @@ use anchor_lang::prelude::*;
 
 pub mod errors;
 pub mod instructions;
-pub mod nft_utils;
+pub mod utils;
 pub mod seeds;
 pub mod state;
 
 use instructions::*;
 
-declare_id!("CEwVmSxQGdVWZwQozZPnwKPtCK837efbs3X9fTMfxz2v");
+declare_id!("2xLWJmw5jyUuYcK5aSRWCGqpAk2jWMVYX4Tjn87mP27b");
 
 #[program]
 pub mod floor_program {
@@ -63,12 +63,17 @@ pub mod floor_program {
     pub fn sell_waln<'info>(
         ctx: Context<'_, '_, 'info, 'info, SellWaln<'info>>,
         waln_amount: u64,
+        hook_bumps: [u8; 4],
     ) -> Result<()> {
-        sell_waln::handler(ctx, waln_amount)
+        sell_waln::handler(ctx, waln_amount, hook_bumps)
     }
 
-    pub fn claim_waln(ctx: Context<ClaimWaln>, round_index: u64) -> Result<()> {
-        claim_waln::handler(ctx, round_index)
+    pub fn claim_waln<'info>(
+        ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>,
+        round_index: u64,
+        hook_bumps: [u8; 4],
+    ) -> Result<()> {
+        claim_waln::handler(ctx, round_index, hook_bumps)
     }
 
     pub fn mint_aat_nft(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {

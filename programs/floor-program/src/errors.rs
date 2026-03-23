@@ -42,4 +42,8 @@ pub enum FloorError {
     InvestorPoolFull,
     #[msg("Investors have insufficient deposits to cover the full round size")]
     InsufficientDepositsForRound,
+    #[msg("Invalid hook accounts count")]
+    InvalidHookAccountsCount,
+    #[msg("Invalid hook accounts")]
+    InvalidHookAccounts,
 }

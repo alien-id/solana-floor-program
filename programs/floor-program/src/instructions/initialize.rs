@@ -54,6 +54,7 @@ pub struct Initialize<'info> {
 
     pub system_program: Program<'info, System>,
     pub usdc_token_program: Interface<'info, TokenInterface>,
+    #[account(address = anchor_spl::token_2022::ID)]
     pub waln_token_program: Interface<'info, TokenInterface>,
 }
 

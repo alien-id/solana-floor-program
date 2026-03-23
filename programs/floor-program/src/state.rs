@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-pub const MAX_INVESTORS: usize = 140;
+pub const MAX_INVESTORS: usize = 100;
 
 #[zero_copy]
 pub struct InvestorAlloc {

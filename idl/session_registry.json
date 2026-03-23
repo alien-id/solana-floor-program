@@ -1,0 +1,793 @@
+{
+  "address": "5pHXF7jCcRDS4672BwpVJyeuYToiGpEnuJBRxLmKemA",
+  "metadata": {
+    "name": "session_registry",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Created with Anchor"
+  },
+  "instructions": [
+    {
+      "name": "add_session",
+      "discriminator": [
+        229,
+        94,
+        25,
+        193,
+        132,
+        13,
+        55,
+        188
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  95,
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "session_entry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "session_address"
+              }
+            ]
+          }
+        },
+        {
+          "name": "solana_entry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  111,
+                  108,
+                  97,
+                  110,
+                  97
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "solana_address"
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "session_address",
+          "type": "string"
+        },
+        {
+          "name": "solana_address",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "add_signer",
+      "discriminator": [
+        76,
+        104,
+        61,
+        51,
+        179,
+        139,
+        47,
+        222
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  95,
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "new_signer",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "initialize",
+      "discriminator": [
+        175,
+        175,
+        109,
+        31,
+        13,
+        152,
+        155,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  95,
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "remove_session",
+      "discriminator": [
+        119,
+        52,
+        46,
+        98,
+        74,
+        75,
+        216,
+        4
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  95,
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "session_entry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "session_address"
+              }
+            ]
+          }
+        },
+        {
+          "name": "solana_entry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  111,
+                  108,
+                  97,
+                  110,
+                  97
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session_entry.solana_address",
+                "account": "SessionEntry"
+              }
+            ]
+          }
+        },
+        {
+          "name": "recipient",
+          "writable": true
+        },
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "session_address",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "remove_signer",
+      "discriminator": [
+        212,
+        32,
+        97,
+        47,
+        61,
+        67,
+        184,
+        141
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  95,
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "signer_to_remove",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "transfer_authority",
+      "discriminator": [
+        48,
+        169,
+        76,
+        72,
+        229,
+        180,
+        55,
+        161
+      ],
+      "accounts": [
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  95,
+                  114,
+                  101,
+                  103,
+                  105,
+                  115,
+                  116,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "new_authority",
+          "type": "pubkey"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Registry",
+      "discriminator": [
+        47,
+        174,
+        110,
+        246,
+        184,
+        182,
+        252,
+        218
+      ]
+    },
+    {
+      "name": "SessionEntry",
+      "discriminator": [
+        219,
+        102,
+        139,
+        251,
+        220,
+        105,
+        108,
+        219
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "AuthorityTransferred",
+      "discriminator": [
+        245,
+        109,
+        179,
+        54,
+        135,
+        92,
+        22,
+        64
+      ]
+    },
+    {
+      "name": "RegistryInitialized",
+      "discriminator": [
+        144,
+        138,
+        62,
+        105,
+        58,
+        38,
+        100,
+        177
+      ]
+    },
+    {
+      "name": "RegistryStats",
+      "discriminator": [
+        157,
+        66,
+        203,
+        182,
+        146,
+        207,
+        21,
+        141
+      ]
+    },
+    {
+      "name": "SessionAdded",
+      "discriminator": [
+        162,
+        170,
+        106,
+        228,
+        152,
+        177,
+        156,
+        135
+      ]
+    },
+    {
+      "name": "SessionRemoved",
+      "discriminator": [
+        87,
+        87,
+        221,
+        236,
+        152,
+        44,
+        177,
+        84
+      ]
+    },
+    {
+      "name": "SignerAdded",
+      "discriminator": [
+        207,
+        55,
+        247,
+        68,
+        22,
+        112,
+        95,
+        45
+      ]
+    },
+    {
+      "name": "SignerRemoved",
+      "discriminator": [
+        61,
+        29,
+        198,
+        197,
+        109,
+        190,
+        201,
+        233
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "SessionAddressAlreadyExists",
+      "msg": "Session address already exists"
+    },
+    {
+      "code": 6001,
+      "name": "SessionAddressNotFound",
+      "msg": "Session address not found"
+    },
+    {
+      "code": 6002,
+      "name": "SolanaAddressAlreadyExists",
+      "msg": "Solana address already exists"
+    },
+    {
+      "code": 6003,
+      "name": "SolanaAddressNotFound",
+      "msg": "Solana address not found"
+    },
+    {
+      "code": 6004,
+      "name": "SignerAlreadyExists",
+      "msg": "Signer already exists"
+    },
+    {
+      "code": 6005,
+      "name": "SignerNotFound",
+      "msg": "Signer not found"
+    },
+    {
+      "code": 6006,
+      "name": "Unauthorized",
+      "msg": "Unauthorized access"
+    },
+    {
+      "code": 6007,
+      "name": "SessionAddressTooLong",
+      "msg": "Session address too long"
+    },
+    {
+      "code": 6008,
+      "name": "InvalidEntry",
+      "msg": "Invalid entry"
+    }
+  ],
+  "types": [
+    {
+      "name": "AuthorityTransferred",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "old_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Registry",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "total_entries",
+            "type": "u64"
+          },
+          {
+            "name": "signers",
+            "type": {
+              "vec": "pubkey"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "RegistryInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RegistryStats",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "total_entries",
+            "type": "u64"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "total_signers",
+            "type": "u64"
+          },
+          {
+            "name": "signers",
+            "type": {
+              "vec": "pubkey"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "SessionAdded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "session_address",
+            "type": "string"
+          },
+          {
+            "name": "solana_address",
+            "type": "pubkey"
+          },
+          {
+            "name": "by",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SessionEntry",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "session_address",
+            "type": "string"
+          },
+          {
+            "name": "solana_address",
+            "type": "pubkey"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "created_by",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SessionRemoved",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "session_address",
+            "type": "string"
+          },
+          {
+            "name": "solana_address",
+            "type": "pubkey"
+          },
+          {
+            "name": "by",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SignerAdded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "signer",
+            "type": "pubkey"
+          },
+          {
+            "name": "by",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SignerRemoved",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "signer",
+            "type": "pubkey"
+          },
+          {
+            "name": "by",
+            "type": "pubkey"
+          }
+        ]
+      }
+    }
+  ]
+}

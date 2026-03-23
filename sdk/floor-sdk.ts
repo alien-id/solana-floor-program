@@ -7,6 +7,7 @@ import {
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import { FloorProgram } from "../target/types/floor_program";
+import {buildHookAccountsWithBumps} from "./utils";
 
 export interface RoundRecordData {
   roundIndex: bigint;
@@ -185,7 +186,7 @@ export class FloorSdk {
         systemProgram: SystemProgram.programId,
         usdcTokenProgram: args.usdcTokenProgram ?? TOKEN_PROGRAM_ID,
         walnTokenProgram: args.walnTokenProgram ?? TOKEN_PROGRAM_ID,
-      })
+      } as any)
       .instruction();
   }
 
@@ -211,7 +212,7 @@ export class FloorSdk {
         systemProgram: SystemProgram.programId,
         tokenProgram: TOKEN_2022_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-      })
+      } as any)
       .instruction();
   }
 
@@ -239,7 +240,7 @@ export class FloorSdk {
         aatNft: args.aatNft,
         usdcTokenProgram: args.usdcTokenProgram ?? TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
-      })
+      } as any)
       .instruction();
   }
 
@@ -264,7 +265,7 @@ export class FloorSdk {
         investorUsdcAccount: args.investorUsdcAccount,
         usdcVault,
         usdcTokenProgram: args.usdcTokenProgram ?? TOKEN_PROGRAM_ID,
-      })
+      } as any)
       .instruction();
   }
 
@@ -292,9 +293,18 @@ export class FloorSdk {
     const [walnVault] = this.walnVaultPda();
     const [usdcVault] = this.usdcVaultPda();
     const [investorPool] = this.investorPoolPda();
-
+    const { accounts: hookAccounts, bumps: hookBumps } = await buildHookAccountsWithBumps(
+      this.program.provider.connection,
+      args.seller,
+      args.walnMint,
+    );
+    const triggerAccounts = (args.roundTriggerAccounts ?? []).map((a) => ({
+      pubkey: a.pubkey,
+      isSigner: false,
+      isWritable: a.isWritable,
+    }));
     return this.program.methods
-      .sellWaln(args.walnAmount)
+      .sellWaln(args.walnAmount, hookBumps)
       .accounts({
         seller: args.seller,
         contractState,
@@ -308,14 +318,8 @@ export class FloorSdk {
         walnTokenProgram: args.walnTokenProgram ?? TOKEN_PROGRAM_ID,
         usdcTokenProgram: args.usdcTokenProgram ?? TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
-      })
-      .remainingAccounts(
-        (args.roundTriggerAccounts ?? []).map((a) => ({
-          pubkey: a.pubkey,
-          isSigner: false,
-          isWritable: a.isWritable,
-        }))
-      )
+      } as any)
+      .remainingAccounts([...hookAccounts, ...triggerAccounts])
       .instruction();
   }
 
@@ -329,9 +333,14 @@ export class FloorSdk {
     const [contractState] = this.contractStatePda();
     const [walnVault] = this.walnVaultPda();
     const [roundLockedWaln] = this.roundLockedWalnPda(args.roundIndex);
+    const { accounts: hookAccounts, bumps: hookBumps } = await buildHookAccountsWithBumps(
+      this.program.provider.connection,
+      contractState,
+      args.walnMint,
+    );
 
     return this.program.methods
-      .claimWaln(args.roundIndex)
+      .claimWaln(args.roundIndex, hookBumps)
       .accounts({
         investor: args.investor,
         contractState,
@@ -340,7 +349,8 @@ export class FloorSdk {
         investorWalnAccount: args.investorWalnAccount,
         walnVault,
         walnTokenProgram: args.walnTokenProgram ?? TOKEN_PROGRAM_ID,
-      })
+      } as any)
+      .remainingAccounts(hookAccounts)
       .instruction();
   }
 
@@ -388,17 +398,17 @@ export class FloorSdk {
 
     return {
       setFloorPrice: (newPriceUsdc: BN): Promise<TransactionInstruction> =>
-        this.program.methods.setFloorPrice(newPriceUsdc).accounts(accounts).instruction(),
+        this.program.methods.setFloorPrice(newPriceUsdc).accounts(accounts as any).instruction(),
       setRoundSize: (newRoundSizeWaln: BN): Promise<TransactionInstruction> =>
-        this.program.methods.setRoundSize(newRoundSizeWaln).accounts(accounts).instruction(),
+        this.program.methods.setRoundSize(newRoundSizeWaln).accounts(accounts as any).instruction(),
       setLockPeriod: (newLockPeriod: BN): Promise<TransactionInstruction> =>
-        this.program.methods.setLockPeriod(newLockPeriod).accounts(accounts).instruction(),
+        this.program.methods.setLockPeriod(newLockPeriod).accounts(accounts as any).instruction(),
       setPaused: (paused: boolean): Promise<TransactionInstruction> =>
-        this.program.methods.setPaused(paused).accounts(accounts).instruction(),
+        this.program.methods.setPaused(paused).accounts(accounts as any).instruction(),
       fundTreasury: (amount: BN): Promise<TransactionInstruction> =>
-        this.program.methods.fundTreasury(amount).accounts(accounts).instruction(),
+        this.program.methods.fundTreasury(amount).accounts(accounts as any).instruction(),
       cancelRound: (): Promise<TransactionInstruction> =>
-        this.program.methods.cancelRound().accounts({ admin: adminPubkey, contractState, investorPool }).instruction(),
+        this.program.methods.cancelRound().accounts({ admin: adminPubkey, contractState, investorPool } as any).instruction(),
     };
   }
 
