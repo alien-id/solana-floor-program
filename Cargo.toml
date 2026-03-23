@@ -1,6 +1,7 @@
 [workspace]
 members = [
-    "programs/*"
+    "programs/*",
+    "admin-cli",
 ]
 resolver = "2"
 
