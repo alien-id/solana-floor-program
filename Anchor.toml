@@ -7,9 +7,13 @@ skip-lint = false
 
 [programs.localnet]
 floor_program = "94Mtkpo6acpu4NifFtkRyEtGRPbh99RQWHqnEuqpzdWi"
+credential_signer = "GKn6Gu6ZVD4M5s1csUZS2gdUCoWJyy5PcFRtbvNXKV2"
+session_registry = "5pHXF7jCcRDS4672BwpVJyeuYToiGpEnuJBRxLmKemA"
 
 [programs.devnet]
 floor_program = "94Mtkpo6acpu4NifFtkRyEtGRPbh99RQWHqnEuqpzdWi"
+credential_signer = "GKn6Gu6ZVD4M5s1csUZS2gdUCoWJyy5PcFRtbvNXKV2"
+session_registry = "5pHXF7jCcRDS4672BwpVJyeuYToiGpEnuJBRxLmKemA"
 
 [registry]
 url = "https://api.apr.dev"
@@ -17,6 +21,11 @@ url = "https://api.apr.dev"
 [provider]
 cluster = "localnet"
 wallet = "~/.config/solana/id.json"
+
+[settings]
+isLocalSigner = true
+localSignerPrivateKey = "4a8f2e1b3c7d9e0f5a8f2e1b3c7d9e0f5a8f2e1b3c7d9e0f5a8f2e1b3c7d9e0f"
+localSignerPublicKey = "3e8648798cfc382c1831722f8c6046e2d0399bd9e08e8087d22089b1e0fb5cf9"
 
 [test.validator]
 bind_address = "127.0.0.1"
@@ -29,6 +38,14 @@ program = "binaries/alien_id_transfer_hook.so"
 [[test.genesis]]
 address = "22zoJMtdu4tQc2PzL74ZUT7FrwgB1Udec8DdW4yw4BdG"
 program = "binaries/solana_attestation_service.so"
+
+[[test.genesis]]
+address = "GKn6Gu6ZVD4M5s1csUZS2gdUCoWJyy5PcFRtbvNXKV2"
+program = "binaries/credential_signer.so"
+
+[[test.genesis]]
+address = "5pHXF7jCcRDS4672BwpVJyeuYToiGpEnuJBRxLmKemA"
+program = "binaries/session_registry.so"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/floor-program.ts"

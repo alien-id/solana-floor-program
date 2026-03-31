@@ -27,12 +27,16 @@ import {
     deriveCredentialPda,
     deriveSchemaPda,
     deriveAttestationPda,
+    deriveEventAuthorityAddress,
     getCreateCredentialInstruction,
     getCreateSchemaInstruction,
-    getCreateAttestationInstruction,
-    serializeAttestationData,
+    getChangeAuthorizedSignersInstruction,
 } from "sas-lib";
 import { address } from "@solana/kit";
+import { createKeyPairSignerFromPrivateKeyBytes } from "@solana/signers";
+import { ed25519 } from "@noble/curves/ed25519";
+import * as fs from "fs";
+import * as toml from "toml";
 
 const USDC_DECIMALS = 6;
 const WALN_DECIMALS = 9;
@@ -52,21 +56,29 @@ const SELL_AMOUNT_TRIGGER = new BN(100 * WALN_UNIT);
 const ALIEN_ID_HOOK_PROGRAM_ID = new PublicKey("AXmwHw9zuXBv5vNc28BoPfm8MS9gR3zbR5EN9nWiLMm8");
 const SAS_PROGRAM_ID = new PublicKey("22zoJMtdu4tQc2PzL74ZUT7FrwgB1Udec8DdW4yw4BdG");
 
+const anchorToml = toml.parse(
+    fs.readFileSync(`${__dirname}/../Anchor.toml`, "utf-8")
+);
+const cluster = anchorToml.provider.cluster as string;
+const programs = anchorToml.programs[cluster];
+
+const CREDENTIAL_SIGNER_PROGRAM_ID = new PublicKey(programs.credential_signer as string);
+const SESSION_REGISTRY_PROGRAM_ID = new PublicKey(programs.session_registry as string);
+
+const LOCAL_SIGNER_PRIVATE_KEY: string = anchorToml.settings?.localSignerPrivateKey;
+const LOCAL_SIGNER_PUBLIC_KEY: string = anchorToml.settings?.localSignerPublicKey;
+
+const TEST_SESSION = {
+    address: "000000010100000000000550ddb1afe5",
+    publicKey: "09ac4562cd3c12359d396bbd8e07f296befbcaa50a01eb3d09bef7e3f963be7e",
+    privateKey: "30887543650595e4bbdb728e6e5ea013b6e164023d1678a7be42ec5b74077269",
+};
+
 const SAS_CREDENTIAL_NAME = "floor_credential";
 const SAS_SCHEMA_NAME = "floor_schema";
 const SAS_SCHEMA_LAYOUT = new Uint8Array([12]);
 const SAS_SCHEMA_FIELD_NAMES = ["session_address"];
 
-function encodeFieldNames(names: string[]): Uint8Array {
-    const parts: Buffer[] = [];
-    for (const name of names) {
-        const b = Buffer.from(name, "utf8");
-        const len = Buffer.allocUnsafe(4);
-        len.writeUInt32LE(b.length, 0);
-        parts.push(len, b);
-    }
-    return Buffer.concat(parts);
-}
 
 describe("floor-program", () => {
     const provider = anchor.AnchorProvider.env();
@@ -107,6 +119,124 @@ describe("floor-program", () => {
     let credentialPda: PublicKey;
     let schemaPda: PublicKey;
 
+    // Credential signer PDAs (set in before())
+    let programStatePda: PublicKey;
+    let credentialSignerPda: PublicKey;
+    let sessionRegistryPda: PublicKey;
+    let oraclePublicKey: PublicKey;
+    let credentialAuthority: any;
+
+    // ---------------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------------
+
+    async function getOracleSignature(
+        session: { address: string; privateKey: string },
+        solanaAddress: string
+    ): Promise<{ signature: Buffer; message: Uint8Array; timestamp: number }> {
+        const timestamp = Math.floor(Date.now() / 1000);
+        const timestampBuffer = Buffer.allocUnsafe(8);
+        timestampBuffer.writeBigInt64LE(BigInt(timestamp), 0);
+        const message = Buffer.concat([
+            Buffer.from(session.address),
+            Buffer.from(solanaAddress),
+            timestampBuffer,
+        ]);
+
+        const privKeyBytes = Buffer.from(LOCAL_SIGNER_PRIVATE_KEY, "hex");
+        const signature = Buffer.from(ed25519.sign(message, privKeyBytes));
+
+        return { signature, message, timestamp };
+    }
+
+    async function createAttestationViaCredentialSigner(
+        payerKeypair: Keypair,
+        session: { address: string; privateKey: string },
+        expirySeconds: number = 365 * 24 * 60 * 60
+    ): Promise<PublicKey> {
+        const payerAddressBase58 = payerKeypair.publicKey.toBase58();
+
+        const credentialPdaAddress = credentialPda.toString() as any;
+        const schemaPdaAddress = schemaPda.toString() as any;
+
+        const [attestationPdaAddress] = await deriveAttestationPda({
+            credential: credentialPdaAddress,
+            schema: schemaPdaAddress,
+            nonce: address(payerAddressBase58),
+        });
+        const attestationPdaKey = new PublicKey(attestationPdaAddress);
+
+        const [sessionPda] = PublicKey.findProgramAddressSync(
+            [Buffer.from("session"), Buffer.from(session.address)],
+            SESSION_REGISTRY_PROGRAM_ID
+        );
+        const [solanaPda] = PublicKey.findProgramAddressSync(
+            [Buffer.from("solana"), payerKeypair.publicKey.toBuffer()],
+            SESSION_REGISTRY_PROGRAM_ID
+        );
+
+        const {
+            signature: oracleSignature,
+            message: oracleSignatureMessage,
+            timestamp,
+        } = await getOracleSignature(session, payerAddressBase58);
+
+        const expiry = new BN(Math.floor(Date.now() / 1000) + expirySeconds);
+
+        const oracleEd25519Instruction =
+            anchor.web3.Ed25519Program.createInstructionWithPublicKey({
+                publicKey: oraclePublicKey.toBuffer(),
+                message: oracleSignatureMessage,
+                signature: oracleSignature,
+            });
+
+        const credentialSignerProgram = new anchor.Program(
+            require("../idl/credential_signer.json"),
+            provider
+        );
+
+        const createAttestationInstruction = await credentialSignerProgram.methods
+            .createAttestation(
+                session.address,
+                Array.from(oracleSignature),
+                expiry,
+                new BN(timestamp)
+            )
+            .accountsStrict({
+                programState: programStatePda,
+                credentialSigner: credentialSignerPda,
+                payer: payerKeypair.publicKey,
+                credential: credentialPda,
+                schema: schemaPda,
+                attestation: attestationPdaKey,
+                systemProgram: SystemProgram.programId,
+                attestationProgram: SAS_PROGRAM_ID,
+                instructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
+                sessionRegistryProgram: SESSION_REGISTRY_PROGRAM_ID,
+                sessionRegistry: sessionRegistryPda,
+                sessionEntry: sessionPda,
+                solanaEntry: solanaPda,
+            })
+            .instruction();
+
+        const tx = new Transaction().add(
+            oracleEd25519Instruction,
+            createAttestationInstruction
+        );
+        tx.feePayer = admin.publicKey;
+        const { blockhash } = await provider.connection.getLatestBlockhash();
+        tx.recentBlockhash = blockhash;
+
+        await sendAndConfirmTransaction(
+            provider.connection,
+            tx,
+            [admin, payerKeypair],
+            { commitment: "confirmed", skipPreflight: false, maxRetries: 5 }
+        );
+
+        return attestationPdaKey;
+    }
+
     // ---------------------------------------------------------------------------
     // Global setup
     // ---------------------------------------------------------------------------
@@ -127,19 +257,43 @@ describe("floor-program", () => {
                     kp.publicKey,
                     2_000_000_000
                 );
-                await provider.connection.confirmTransaction(sig, "confirmed");
+                const { blockhash, lastValidBlockHeight } =
+                    await provider.connection.getLatestBlockhash();
+                await provider.connection.confirmTransaction(
+                    { signature: sig, blockhash, lastValidBlockHeight },
+                    "confirmed"
+                );
             })
         );
 
         usdcMint = await createTestMint(provider, USDC_DECIMALS);
 
         // ------------------------------------------------------------------
+        // Credential signer PDAs
+        // ------------------------------------------------------------------
+        [programStatePda] = PublicKey.findProgramAddressSync(
+            [Buffer.from("program_state")],
+            CREDENTIAL_SIGNER_PROGRAM_ID
+        );
+        [credentialSignerPda] = PublicKey.findProgramAddressSync(
+            [Buffer.from("credential_signer")],
+            CREDENTIAL_SIGNER_PROGRAM_ID
+        );
+        [sessionRegistryPda] = PublicKey.findProgramAddressSync(
+            [Buffer.from("session_registry")],
+            SESSION_REGISTRY_PROGRAM_ID
+        );
+        oraclePublicKey = new PublicKey(Buffer.from(LOCAL_SIGNER_PUBLIC_KEY, "hex"));
+
+        // ------------------------------------------------------------------
         // SAS setup: derive PDAs via sas-lib, create credential + schema
         // ------------------------------------------------------------------
-        const adminAddr = address(admin.publicKey.toBase58());
+        credentialAuthority = await createKeyPairSignerFromPrivateKeyBytes(
+            admin.secretKey.slice(0, 32)
+        );
 
         const [credentialPdaAddr] = await deriveCredentialPda({
-            authority: adminAddr,
+            authority: credentialAuthority.address,
             name: SAS_CREDENTIAL_NAME,
         });
         credentialPda = new PublicKey(credentialPdaAddr);
@@ -152,12 +306,12 @@ describe("floor-program", () => {
         schemaPda = new PublicKey(schemaPdaAddr);
 
         const createCredIx = getCreateCredentialInstruction({
-            payer: adminAddr as any,
-            authority: adminAddr as any,
+            payer: credentialAuthority,
+            authority: credentialAuthority,
             credential: credentialPdaAddr,
-            signers: [adminAddr],
+            signers: [credentialAuthority.address],
             name: SAS_CREDENTIAL_NAME,
-        } as any);
+        });
         await sendAndConfirmTransaction(
             provider.connection,
             new Transaction().add(new anchor.web3.TransactionInstruction({
@@ -175,15 +329,15 @@ describe("floor-program", () => {
         );
 
         const createSchemaIx = getCreateSchemaInstruction({
-            payer: adminAddr as any,
-            authority: adminAddr as any,
+            payer: credentialAuthority,
+            authority: credentialAuthority,
             credential: credentialPdaAddr,
             schema: schemaPdaAddr,
             name: SAS_SCHEMA_NAME,
             description: "Schema for floor program seller verification",
             layout: SAS_SCHEMA_LAYOUT,
             fieldNames: SAS_SCHEMA_FIELD_NAMES,
-        } as any);
+        });
         await sendAndConfirmTransaction(
             provider.connection,
             new Transaction().add(new anchor.web3.TransactionInstruction({
@@ -200,6 +354,82 @@ describe("floor-program", () => {
             [admin],
             { commitment: "confirmed" }
         );
+
+        // ------------------------------------------------------------------
+        // Initialize session_registry
+        // ------------------------------------------------------------------
+        const sessionRegistryProgram = new anchor.Program(
+            require("../idl/session_registry.json"),
+            provider
+        );
+        await sessionRegistryProgram.methods
+            .initialize()
+            .accountsStrict({
+                registry: sessionRegistryPda,
+                authority: admin.publicKey,
+                systemProgram: SystemProgram.programId,
+            })
+            .rpc({ commitment: "confirmed" });
+
+        // ------------------------------------------------------------------
+        // Initialize credential_signer program
+        // ------------------------------------------------------------------
+        const eventAuthorityPda = await deriveEventAuthorityAddress();
+        const credentialSignerProgram = new anchor.Program(
+            require("../idl/credential_signer.json"),
+            provider
+        );
+        await credentialSignerProgram.methods
+            .initialize(
+                oraclePublicKey,
+                credentialPda,
+                schemaPda,
+                new PublicKey(eventAuthorityPda),
+                SESSION_REGISTRY_PROGRAM_ID
+            )
+            .accountsStrict({
+                programState: programStatePda,
+                credentialSigner: credentialSignerPda,
+                admin: admin.publicKey,
+                systemProgram: SystemProgram.programId,
+            })
+            .rpc({ commitment: "confirmed" });
+
+        // ------------------------------------------------------------------
+        // Update SAS credential signers to credentialSignerPda
+        // ------------------------------------------------------------------
+        const changeSignerIx = getChangeAuthorizedSignersInstruction({
+            payer: credentialAuthority,
+            authority: credentialAuthority,
+            credential: credentialPdaAddr,
+            signers: [address(credentialSignerPda.toString())],
+        });
+        await sendAndConfirmTransaction(
+            provider.connection,
+            new Transaction().add(new anchor.web3.TransactionInstruction({
+                keys: [
+                    { pubkey: admin.publicKey, isSigner: true, isWritable: true },
+                    { pubkey: admin.publicKey, isSigner: true, isWritable: false },
+                    { pubkey: credentialPda, isSigner: false, isWritable: true },
+                    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+                ],
+                programId: new PublicKey(changeSignerIx.programAddress),
+                data: Buffer.from(changeSignerIx.data),
+            })),
+            [admin],
+            { commitment: "confirmed" }
+        );
+
+        // ------------------------------------------------------------------
+        // Add credentialSignerPda as signer in session_registry
+        // ------------------------------------------------------------------
+        await sessionRegistryProgram.methods
+            .addSigner(credentialSignerPda)
+            .accountsStrict({
+                registry: sessionRegistryPda,
+                authority: admin.publicKey,
+            })
+            .rpc({ commitment: "confirmed" });
 
         // ------------------------------------------------------------------
         // Create Token-2022 walnMint with alien_id transfer hook
@@ -293,46 +523,7 @@ describe("floor-program", () => {
             })
             .rpc({ commitment: "confirmed" });
 
-        const sellerAddr = address(seller.publicKey.toBase58());
-        const [sellerAttestationPdaAddr] = await deriveAttestationPda({
-            credential: credentialPdaAddr,
-            schema: schemaPdaAddr,
-            nonce: sellerAddr,
-        });
-        const sellerAttestationPda = new PublicKey(sellerAttestationPdaAddr);
-
-        const attestationExpiry = BigInt(Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60);
-        const attestationData = serializeAttestationData(
-            { layout: SAS_SCHEMA_LAYOUT, fieldNames: encodeFieldNames(SAS_SCHEMA_FIELD_NAMES) } as any,
-            { session_address: "000000010100000000000550ddb1afe5" }
-        );
-        const createAttestIx = getCreateAttestationInstruction({
-            payer: adminAddr as any,
-            authority: adminAddr as any,
-            credential: credentialPdaAddr,
-            schema: schemaPdaAddr,
-            attestation: sellerAttestationPdaAddr,
-            nonce: sellerAddr,
-            data: attestationData,
-            expiry: attestationExpiry,
-        } as any);
-        await sendAndConfirmTransaction(
-            provider.connection,
-            new Transaction().add(new anchor.web3.TransactionInstruction({
-                keys: [
-                    { pubkey: admin.publicKey, isSigner: true, isWritable: true },
-                    { pubkey: admin.publicKey, isSigner: true, isWritable: false },
-                    { pubkey: credentialPda, isSigner: false, isWritable: false },
-                    { pubkey: schemaPda, isSigner: false, isWritable: false },
-                    { pubkey: sellerAttestationPda, isSigner: false, isWritable: true },
-                    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-                ],
-                programId: SAS_PROGRAM_ID,
-                data: Buffer.from(createAttestIx.data),
-            })),
-            [admin],
-            { commitment: "confirmed" }
-        );
+        await createAttestationViaCredentialSigner(seller, TEST_SESSION);
 
         // ------------------------------------------------------------------
         // Mint AAT NFTs via the floor program (Token-2022, single transaction).
