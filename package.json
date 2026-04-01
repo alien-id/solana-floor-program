@@ -20,13 +20,13 @@
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
-    "dotenv": "^16.4.5",
     "@metaplex-foundation/mpl-core": "^1.2.0",
     "@metaplex-foundation/umi": "^0.9.2",
     "@metaplex-foundation/umi-bundle-defaults": "^0.9.2",
     "@metaplex-foundation/umi-web3js-adapters": "^0.9.2",
     "@solana/spl-token": "^0.4.14",
     "@solana/spl-token-metadata": "^0.1.6",
+    "dotenv": "^16.4.5",
     "sas-lib": "^1.0.10"
   },
   "devDependencies": {
