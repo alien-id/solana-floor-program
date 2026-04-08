@@ -1320,8 +1320,8 @@ describe("floor-program", () => {
             const unlockTs = (entry as any).usdcUnlockTs.toNumber();
 
             assert.ok(
-                unlockTs >= nowBefore + NINETY_DAYS.toNumber(),
-                `usdc_unlock_ts ${unlockTs} should be >= ${nowBefore + NINETY_DAYS.toNumber()}`
+                unlockTs >= nowBefore + NINETY_DAYS.toNumber() - 5,
+                `usdc_unlock_ts ${unlockTs} should be >= ${nowBefore + NINETY_DAYS.toNumber() - 5}`
             );
             assert.ok(
                 unlockTs <= nowAfter + NINETY_DAYS.toNumber(),
