@@ -26,6 +26,7 @@ export interface InvestorRecordData {
   usdcCommitted: BN;
   walnPurchasedTotal: BN;
   aatVolume: BN;
+  usdcUnlockTs: BN;
 }
 
 const TOKEN_2022_PROGRAM_ID = new PublicKey(
@@ -403,6 +404,14 @@ export class FloorSdk {
         this.program.methods.setRoundSize(newRoundSizeWaln).accounts(accounts as any).instruction(),
       setLockPeriod: (newLockPeriod: BN): Promise<TransactionInstruction> =>
         this.program.methods.setLockPeriod(newLockPeriod).accounts(accounts as any).instruction(),
+      setUsdcWithdrawLock: (newLockSeconds: BN): Promise<TransactionInstruction> =>
+        this.program.methods.setUsdcWithdrawLock(newLockSeconds).accounts(accounts as any).instruction(),
+      setInvestorUsdcUnlock: (investor: PublicKey, newUnlockTs: BN): Promise<TransactionInstruction> =>
+        this.program.methods.setInvestorUsdcUnlock(investor, newUnlockTs).accounts({
+          admin: adminPubkey,
+          contractState,
+          investorPool,
+        } as any).instruction(),
       setPaused: (paused: boolean): Promise<TransactionInstruction> =>
         this.program.methods.setPaused(paused).accounts(accounts as any).instruction(),
       fundTreasury: (amount: BN): Promise<TransactionInstruction> =>

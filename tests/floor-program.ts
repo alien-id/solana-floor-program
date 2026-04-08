@@ -1253,6 +1253,193 @@ describe("floor-program", () => {
     });
 
     // ---------------------------------------------------------------------------
+    // 4b. USDC withdraw lock
+    // ---------------------------------------------------------------------------
+    describe("usdc_withdraw_lock", () => {
+        const NINETY_DAYS = new BN(90 * 24 * 60 * 60);
+        const SMALL_DEPOSIT = new BN(100 * USDC_UNIT);
+
+        it("set_usdc_withdraw_lock updates state", async () => {
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.admin(admin.publicKey).setUsdcWithdrawLock(NINETY_DAYS)
+                )
+            );
+            const state = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(
+                (state as any).usdcWithdrawLockSeconds.eq(NINETY_DAYS),
+                `expected usdcWithdrawLockSeconds=${NINETY_DAYS}, got ${(state as any).usdcWithdrawLockSeconds}`
+            );
+        });
+
+        it("set_usdc_withdraw_lock rejects negative value", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(admin.publicKey).setUsdcWithdrawLock(new BN(-1))
+                    )
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.include(e.toString(), "InvalidParameter");
+            }
+        });
+
+        it("set_usdc_withdraw_lock rejects non-admin", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(investor1.publicKey).setUsdcWithdrawLock(new BN(0))
+                    ),
+                    [investor1]
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.include(e.toString(), "Unauthorized");
+            }
+        });
+
+        it("deposit sets usdc_unlock_ts to now + lock period", async () => {
+            const nowBefore = Math.floor(Date.now() / 1000);
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.depositUsdcIx({
+                        investor: investor1.publicKey,
+                        investorUsdcAccount: investor1UsdcAcc,
+                        usdcMint,
+                        aatNft: investor1NftPubkey,
+                        usdcAmount: SMALL_DEPOSIT,
+                    })
+                ),
+                [investor1]
+            );
+
+            const nowAfter = Math.floor(Date.now() / 1000);
+            const entry = await sdk.fetchInvestorRecord(investor1.publicKey);
+            const unlockTs = (entry as any).usdcUnlockTs.toNumber();
+
+            assert.ok(
+                unlockTs >= nowBefore + NINETY_DAYS.toNumber(),
+                `usdc_unlock_ts ${unlockTs} should be >= ${nowBefore + NINETY_DAYS.toNumber()}`
+            );
+            assert.ok(
+                unlockTs <= nowAfter + NINETY_DAYS.toNumber(),
+                `usdc_unlock_ts ${unlockTs} should be <= ${nowAfter + NINETY_DAYS.toNumber()}`
+            );
+        });
+
+        it("withdraw is blocked before unlock timestamp (UsdcLocked)", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.withdrawUsdcIx({
+                            investor: investor1.publicKey,
+                            investorUsdcAccount: investor1UsdcAcc,
+                            usdcMint,
+                            amount: SMALL_DEPOSIT,
+                        })
+                    ),
+                    [investor1]
+                );
+                assert.fail("should have thrown UsdcLocked");
+            } catch (e: any) {
+                assert.include(e.toString(), "UsdcLocked");
+            }
+        });
+
+        it("set_investor_usdc_unlock rejects non-admin", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(investor2.publicKey).setInvestorUsdcUnlock(
+                            investor1.publicKey,
+                            new BN(1)
+                        )
+                    ),
+                    [investor2]
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.include(e.toString(), "Unauthorized");
+            }
+        });
+
+        it("admin can override investor unlock timestamp to the past", async () => {
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.admin(admin.publicKey).setInvestorUsdcUnlock(
+                        investor1.publicKey,
+                        new BN(1)
+                    )
+                )
+            );
+
+            const entry = await sdk.fetchInvestorRecord(investor1.publicKey);
+            assert.ok(
+                (entry as any).usdcUnlockTs.eqn(1),
+                `expected usdcUnlockTs=1, got ${(entry as any).usdcUnlockTs}`
+            );
+        });
+
+        it("withdraw succeeds after admin overrides unlock timestamp", async () => {
+            const balBefore = await getTokenBalance(provider, investor1UsdcAcc);
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.withdrawUsdcIx({
+                        investor: investor1.publicKey,
+                        investorUsdcAccount: investor1UsdcAcc,
+                        usdcMint,
+                        amount: SMALL_DEPOSIT,
+                    })
+                ),
+                [investor1]
+            );
+
+            const balAfter = await getTokenBalance(provider, investor1UsdcAcc);
+            assert.equal(balAfter - balBefore, BigInt(SMALL_DEPOSIT.toNumber()));
+        });
+
+        it("set_investor_usdc_unlock rejects unknown investor", async () => {
+            const stranger = Keypair.generate();
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(admin.publicKey).setInvestorUsdcUnlock(
+                            stranger.publicKey,
+                            new BN(1)
+                        )
+                    )
+                );
+                assert.fail("should have thrown InvalidInvestor");
+            } catch (e: any) {
+                assert.include(e.toString(), "InvalidInvestor");
+            }
+        });
+
+        after(async () => {
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.admin(admin.publicKey).setUsdcWithdrawLock(new BN(0))
+                )
+            );
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.depositUsdcIx({
+                        investor: investor1.publicKey,
+                        investorUsdcAccount: investor1UsdcAcc,
+                        usdcMint,
+                        aatNft: investor1NftPubkey,
+                        usdcAmount: SMALL_DEPOSIT,
+                    })
+                ),
+                [investor1]
+            );
+        });
+    });
+
+    // ---------------------------------------------------------------------------
     // 5. sell_waln — partial sale (auto-starts round, no trigger)
     // ---------------------------------------------------------------------------
     describe("sell_waln partial (auto-start)", () => {

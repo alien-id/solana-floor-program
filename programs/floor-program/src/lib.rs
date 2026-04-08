@@ -21,7 +21,7 @@ pub mod state;
 
 use instructions::*;
 
-declare_id!("94Mtkpo6acpu4NifFtkRyEtGRPbh99RQWHqnEuqpzdWi");
+declare_id!("3tBjDJHPCMmKjxRAxTHiaUmZ9Li1D8YvWCS48pBMjRSe");
 
 #[program]
 pub mod floor_program {
@@ -51,6 +51,18 @@ pub mod floor_program {
 
     pub fn set_lock_period(ctx: Context<AdminOnly>, new_lock_period: i64) -> Result<()> {
         admin::set_lock_period(ctx, new_lock_period)
+    }
+
+    pub fn set_usdc_withdraw_lock(ctx: Context<AdminOnly>, new_lock_seconds: i64) -> Result<()> {
+        admin::set_usdc_withdraw_lock(ctx, new_lock_seconds)
+    }
+
+    pub fn set_investor_usdc_unlock(
+        ctx: Context<SetInvestorUsdcUnlock>,
+        investor: Pubkey,
+        new_unlock_ts: i64,
+    ) -> Result<()> {
+        admin::set_investor_usdc_unlock(ctx, investor, new_unlock_ts)
     }
 
     pub fn set_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {

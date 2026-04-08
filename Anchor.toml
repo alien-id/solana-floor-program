@@ -6,12 +6,12 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-floor_program = "94Mtkpo6acpu4NifFtkRyEtGRPbh99RQWHqnEuqpzdWi"
+floor_program = "3tBjDJHPCMmKjxRAxTHiaUmZ9Li1D8YvWCS48pBMjRSe"
 credential_signer = "GKn6Gu6ZVD4M5s1csUZS2gdUCoWJyy5PcFRtbvNXKV2"
 session_registry = "5pHXF7jCcRDS4672BwpVJyeuYToiGpEnuJBRxLmKemA"
 
 [programs.devnet]
-floor_program = "94Mtkpo6acpu4NifFtkRyEtGRPbh99RQWHqnEuqpzdWi"
+floor_program = "3tBjDJHPCMmKjxRAxTHiaUmZ9Li1D8YvWCS48pBMjRSe"
 credential_signer = "GKn6Gu6ZVD4M5s1csUZS2gdUCoWJyy5PcFRtbvNXKV2"
 session_registry = "5pHXF7jCcRDS4672BwpVJyeuYToiGpEnuJBRxLmKemA"
 

@@ -70,6 +70,12 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
         &ctx.accounts.investor.key(),
     )?;
 
+    let usdc_withdraw_lock_seconds;
+    {
+        let state = ctx.accounts.contract_state.load()?;
+        usdc_withdraw_lock_seconds = state.usdc_withdraw_lock_seconds;
+    }
+
     let investor_key = ctx.accounts.investor.key();
 
     {
@@ -109,6 +115,7 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
                 usdc_committed: 0,
                 waln_purchased_total: 0,
                 aat_volume: 0,
+                usdc_unlock_ts: 0,
             };
             pool.count += 1;
             &mut pool.investors[idx]
@@ -120,6 +127,13 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
         .usdc_deposited
         .checked_add(usdc_amount)
         .ok_or(FloorError::ArithmeticOverflow)?;
+
+    if usdc_withdraw_lock_seconds > 0 {
+        let now = Clock::get()?.unix_timestamp;
+        record.usdc_unlock_ts = now
+            .checked_add(usdc_withdraw_lock_seconds)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+    }
 
     let mut state = ctx.accounts.contract_state.load_mut()?;
     state.total_usdc_in_lobby = state

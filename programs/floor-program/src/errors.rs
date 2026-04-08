@@ -50,4 +50,6 @@ pub enum FloorError {
     NotPendingAdmin,
     #[msg("No pending authority transfer in progress")]
     NoPendingAdmin,
+    #[msg("USDC is still locked — withdrawal is not allowed before the unlock timestamp")]
+    UsdcLocked,
 }

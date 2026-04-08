@@ -39,6 +39,47 @@ pub fn set_lock_period(ctx: Context<AdminOnly>, new_lock_period: i64) -> Result<
     Ok(())
 }
 
+pub fn set_usdc_withdraw_lock(ctx: Context<AdminOnly>, new_lock_seconds: i64) -> Result<()> {
+    require!(new_lock_seconds >= 0, FloorError::InvalidParameter);
+    let mut state = ctx.accounts.contract_state.load_mut()?;
+    state.usdc_withdraw_lock_seconds = new_lock_seconds;
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct SetInvestorUsdcUnlock<'info> {
+    pub admin: Signer<'info>,
+
+    #[account(
+        seeds = [CONTRACT_STATE_SEED],
+        bump,
+        constraint = contract_state.load()?.admin == admin.key() @ FloorError::Unauthorized,
+    )]
+    pub contract_state: AccountLoader<'info, ProgramState>,
+
+    #[account(
+        mut,
+        seeds = [INVESTOR_POOL_SEED],
+        bump,
+    )]
+    pub investor_pool: AccountLoader<'info, InvestorPool>,
+}
+
+pub fn set_investor_usdc_unlock(
+    ctx: Context<SetInvestorUsdcUnlock>,
+    investor: Pubkey,
+    new_unlock_ts: i64,
+) -> Result<()> {
+    let mut pool = ctx.accounts.investor_pool.load_mut()?;
+    let count = pool.count as usize;
+    let record = pool.investors[..count]
+        .iter_mut()
+        .find(|r| r.investor == investor)
+        .ok_or(FloorError::InvalidInvestor)?;
+    record.usdc_unlock_ts = new_unlock_ts;
+    Ok(())
+}
+
 pub fn set_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
     let mut state = ctx.accounts.contract_state.load_mut()?;
     state.paused = if paused { 1 } else { 0 };

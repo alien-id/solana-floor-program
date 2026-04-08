@@ -33,6 +33,7 @@ pub struct ProgramState {
     pub total_usdc_in_lobby: u64,
     pub round_count: u64,
     pub lock_period_seconds: i64,
+    pub usdc_withdraw_lock_seconds: i64,
     pub current_round_floor_price: u64,
     pub current_round_size_waln: u64,
     pub total_aat_volume: u64,
@@ -61,6 +62,7 @@ pub struct InvestorRecord {
     pub usdc_committed: u64,
     pub waln_purchased_total: u64,
     pub aat_volume: u64,
+    pub usdc_unlock_ts: i64,
 }
 
 #[account(zero_copy)]

@@ -1,7 +1,8 @@
 use admin_cli::handlers::{
     handle_accept_authority, handle_cancel_round, handle_fund_treasury, handle_info,
-    handle_initialize, handle_mint_aat_nft, handle_set_floor_price, handle_set_lock_period,
-    handle_set_paused, handle_set_round_size, handle_transfer_authority,
+    handle_initialize, handle_mint_aat_nft, handle_set_floor_price, handle_set_investor_usdc_unlock,
+    handle_set_lock_period, handle_set_paused, handle_set_round_size, handle_set_usdc_withdraw_lock,
+    handle_transfer_authority,
 };
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
 use anchor_client::solana_sdk::pubkey::Pubkey;
@@ -59,6 +60,13 @@ enum Commands {
     },
     SetLockPeriod {
         new_lock_period: i64,
+    },
+    SetUsdcWithdrawLock {
+        new_lock_seconds: i64,
+    },
+    SetInvestorUsdcUnlock {
+        investor: String,
+        new_unlock_ts: i64,
     },
     SetPaused {
         #[arg(long, action = clap::ArgAction::Set)]
@@ -165,6 +173,18 @@ fn main() -> Result<()> {
         }
         Commands::SetLockPeriod { new_lock_period } => {
             handle_set_lock_period(&program, new_lock_period)?
+        }
+        Commands::SetUsdcWithdrawLock { new_lock_seconds } => {
+            handle_set_usdc_withdraw_lock(&program, new_lock_seconds)?
+        }
+        Commands::SetInvestorUsdcUnlock {
+            investor,
+            new_unlock_ts,
+        } => {
+            let investor = investor
+                .parse::<Pubkey>()
+                .map_err(|e| anyhow!("Invalid investor pubkey: {}", e))?;
+            handle_set_investor_usdc_unlock(&program, investor, new_unlock_ts)?
         }
         Commands::SetPaused { paused } => handle_set_paused(&program, paused)?,
         Commands::CancelRound => handle_cancel_round(&program)?,

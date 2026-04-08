@@ -24,7 +24,9 @@ admin-cli [--keypair <PATH> | --keypair-base58-file <PATH>] [--cluster <CLUSTER_
 - `initialize --usdc-mint <PUBKEY> --waln-mint <PUBKEY> --floor-price-usdc <AMOUNT> --round-size-waln <AMOUNT> [--lock-period-seconds <SECONDS>]` — initialize the program
 - `set-floor-price <PRICE>` — update floor price (raw units)
 - `set-round-size <SIZE>` — update round size in WALN (raw units)
-- `set-lock-period <SECONDS>` — update lock period in seconds
+- `set-lock-period <SECONDS>` — update wALN claim lock period in seconds
+- `set-usdc-withdraw-lock <SECONDS>` — update the USDC withdrawal lock duration (0 = disabled); applied to each investor on their next deposit
+- `set-investor-usdc-unlock <INVESTOR_PUBKEY> <UNIX_TIMESTAMP>` — override a specific investor's USDC unlock timestamp (admin-only early exit)
 - `set-paused --paused <true|false>` — pause or unpause the contract
 - `cancel-round` — cancel the current active round and refund locked USDC
 - `fund-treasury <LAMPORTS>` — send SOL to the treasury PDA for round account rent
@@ -49,6 +51,12 @@ admin-cli [--keypair <PATH> | --keypair-base58-file <PATH>] [--cluster <CLUSTER_
   - `admin-cli fund-treasury 100000000`
 - Mint AAT NFT for an investor:
   - `admin-cli mint-aat-nft <INVESTOR_PUBKEY> 1000`
+- Set USDC withdrawal lock to 90 days:
+  - `admin-cli set-usdc-withdraw-lock 7776000`
+- Disable USDC withdrawal lock:
+  - `admin-cli set-usdc-withdraw-lock 0`
+- Override unlock timestamp for a specific investor (to allow early withdrawal):
+  - `admin-cli set-investor-usdc-unlock <INVESTOR_PUBKEY> 1`
 - Transfer admin authority to a new address:
   - `admin-cli transfer-authority <NEW_ADMIN_PUBKEY>`
 - Accept pending authority transfer (run with new admin keypair):

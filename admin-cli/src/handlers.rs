@@ -100,6 +100,7 @@ pub fn handle_info(program: &Program<Arc<Keypair>>) -> Result<()> {
         state.round_size_waln as f64 / waln_scale
     );
     println!("Lock Period:    {} seconds", state.lock_period_seconds);
+    println!("USDC Withdraw Lock: {} seconds", state.usdc_withdraw_lock_seconds);
     println!("Paused:         {}", state.paused == 1);
 
     println!("\n--- Round Status ---");
@@ -146,13 +147,14 @@ pub fn handle_info(program: &Program<Arc<Keypair>>) -> Result<()> {
             continue;
         }
         println!(
-            "  {} | deposited: {:.6} USDC | locked: {:.6} USDC | committed: {:.6} USDC | waln: {:.6} WALN | aat: {}",
+            "  {} | deposited: {:.6} USDC | locked: {:.6} USDC | committed: {:.6} USDC | waln: {:.6} WALN | aat: {} | usdc_unlock_ts: {}",
             record.investor,
             record.usdc_deposited as f64 / usdc_scale,
             record.usdc_locked_current_round as f64 / usdc_scale,
             record.usdc_committed as f64 / usdc_scale,
             record.waln_purchased_total as f64 / waln_scale,
             record.aat_volume,
+            record.usdc_unlock_ts,
         );
     }
 
@@ -376,6 +378,59 @@ pub fn handle_accept_authority(program: &Program<Arc<Keypair>>) -> Result<()> {
 
     println!("Transaction successful: {}", tx);
     println!("Authority transfer complete. You are now the admin.");
+    Ok(())
+}
+
+pub fn handle_set_usdc_withdraw_lock(
+    program: &Program<Arc<Keypair>>,
+    new_lock_seconds: i64,
+) -> Result<()> {
+    let program_id = program.id();
+    let (contract_state, _) = get_contract_state_address(&program_id);
+
+    println!("Setting USDC withdraw lock to: {} seconds", new_lock_seconds);
+
+    let tx = program
+        .request()
+        .accounts(floor_program::accounts::AdminOnly {
+            admin: program.payer(),
+            contract_state,
+        })
+        .args(floor_program::instruction::SetUsdcWithdrawLock { new_lock_seconds })
+        .send()?;
+
+    println!("Transaction successful: {}", tx);
+    Ok(())
+}
+
+pub fn handle_set_investor_usdc_unlock(
+    program: &Program<Arc<Keypair>>,
+    investor: Pubkey,
+    new_unlock_ts: i64,
+) -> Result<()> {
+    let program_id = program.id();
+    let (contract_state, _) = get_contract_state_address(&program_id);
+    let (investor_pool, _) = get_investor_pool_address(&program_id);
+
+    println!(
+        "Setting USDC unlock timestamp for investor {} to: {} (Unix)",
+        investor, new_unlock_ts
+    );
+
+    let tx = program
+        .request()
+        .accounts(floor_program::accounts::SetInvestorUsdcUnlock {
+            admin: program.payer(),
+            contract_state,
+            investor_pool,
+        })
+        .args(floor_program::instruction::SetInvestorUsdcUnlock {
+            investor,
+            new_unlock_ts,
+        })
+        .send()?;
+
+    println!("Transaction successful: {}", tx);
     Ok(())
 }
 
