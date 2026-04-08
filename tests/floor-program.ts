@@ -1424,18 +1424,6 @@ describe("floor-program", () => {
                     await sdk.admin(admin.publicKey).setUsdcWithdrawLock(new BN(0))
                 )
             );
-            await provider.sendAndConfirm(
-                new Transaction().add(
-                    await sdk.depositUsdcIx({
-                        investor: investor1.publicKey,
-                        investorUsdcAccount: investor1UsdcAcc,
-                        usdcMint,
-                        aatNft: investor1NftPubkey,
-                        usdcAmount: SMALL_DEPOSIT,
-                    })
-                ),
-                [investor1]
-            );
         });
     });
 
