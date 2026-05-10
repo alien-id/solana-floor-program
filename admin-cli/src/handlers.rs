@@ -62,6 +62,7 @@ pub fn handle_info(program: &Program<Arc<Keypair>>) -> Result<()> {
 
     println!("\n=== Floor Program State ===\n");
     println!("Program ID:     {}", program_id);
+    println!("Contract State: {} (must be whitelisted in transfer hook)", contract_state_pubkey);
     println!("Admin:          {}", state.admin);
     if state.pending_admin != Pubkey::default() {
         println!("Pending Admin:  {} (transfer in progress)", state.pending_admin);
