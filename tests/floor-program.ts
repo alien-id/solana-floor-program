@@ -46,6 +46,10 @@ const WALN_UNIT = 10 ** WALN_DECIMALS;
 const FLOOR_PRICE = new BN(100_000);
 const ROUND_SIZE = new BN(200 * WALN_UNIT);
 const LOCK_PERIOD = new BN(0);
+const CONFIRM_OPTIONS = {
+    commitment: "confirmed" as const,
+    preflightCommitment: "processed" as const,
+};
 
 const INVESTOR1_USDC = new BN(5_000 * USDC_UNIT);
 const INVESTOR2_USDC = new BN(5_000 * USDC_UNIT);
@@ -81,7 +85,12 @@ const SAS_SCHEMA_FIELD_NAMES = ["session_address"];
 
 
 describe("floor-program", () => {
-    const provider = anchor.AnchorProvider.env();
+    const envProvider = anchor.AnchorProvider.env();
+    const provider = new AnchorProvider(
+        envProvider.connection,
+        envProvider.wallet,
+        CONFIRM_OPTIONS
+    );
     anchor.setProvider(provider);
     const sdk = new FloorSdk(provider);
 
@@ -231,7 +240,7 @@ describe("floor-program", () => {
             provider.connection,
             tx,
             [admin, payerKeypair],
-            { commitment: "confirmed", skipPreflight: false, maxRetries: 5 }
+            { ...CONFIRM_OPTIONS, skipPreflight: false, maxRetries: 5 }
         );
 
         return attestationPdaKey;
@@ -325,7 +334,7 @@ describe("floor-program", () => {
                 data: Buffer.from(createCredIx.data),
             })),
             [admin],
-            { commitment: "confirmed" }
+            CONFIRM_OPTIONS
         );
 
         const createSchemaIx = getCreateSchemaInstruction({
@@ -352,7 +361,7 @@ describe("floor-program", () => {
                 data: Buffer.from(createSchemaIx.data),
             })),
             [admin],
-            { commitment: "confirmed" }
+            CONFIRM_OPTIONS
         );
 
         // ------------------------------------------------------------------
@@ -369,7 +378,7 @@ describe("floor-program", () => {
                 authority: admin.publicKey,
                 systemProgram: SystemProgram.programId,
             })
-            .rpc({ commitment: "confirmed" });
+            .rpc(CONFIRM_OPTIONS);
 
         // ------------------------------------------------------------------
         // Initialize credential_signer program
@@ -393,7 +402,7 @@ describe("floor-program", () => {
                 admin: admin.publicKey,
                 systemProgram: SystemProgram.programId,
             })
-            .rpc({ commitment: "confirmed" });
+            .rpc(CONFIRM_OPTIONS);
 
         // ------------------------------------------------------------------
         // Update SAS credential signers to credentialSignerPda
@@ -417,7 +426,7 @@ describe("floor-program", () => {
                 data: Buffer.from(changeSignerIx.data),
             })),
             [admin],
-            { commitment: "confirmed" }
+            CONFIRM_OPTIONS
         );
 
         // ------------------------------------------------------------------
@@ -429,7 +438,7 @@ describe("floor-program", () => {
                 registry: sessionRegistryPda,
                 authority: admin.publicKey,
             })
-            .rpc({ commitment: "confirmed" });
+            .rpc(CONFIRM_OPTIONS);
 
         // ------------------------------------------------------------------
         // Create Token-2022 walnMint with alien_id transfer hook
@@ -521,7 +530,7 @@ describe("floor-program", () => {
                 mint: walnMint,
                 systemProgram: SystemProgram.programId,
             })
-            .rpc({ commitment: "confirmed" });
+            .rpc(CONFIRM_OPTIONS);
 
         await createAttestationViaCredentialSigner(seller, TEST_SESSION);
 

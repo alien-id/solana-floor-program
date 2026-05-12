@@ -20,6 +20,11 @@ import {
     createInitializeTransferHookInstruction,
 } from "@solana/spl-token";
 
+const CONFIRM_OPTIONS = {
+    commitment: "confirmed" as const,
+    preflightCommitment: "processed" as const,
+};
+
 export async function createTestMint(
     provider: AnchorProvider,
     decimals: number = 0
@@ -29,7 +34,9 @@ export async function createTestMint(
         (provider.wallet as anchor.Wallet).payer,
         provider.wallet.publicKey,
         null,
-        decimals
+        decimals,
+        undefined,
+        CONFIRM_OPTIONS
     );
 }
 
@@ -45,7 +52,7 @@ export async function createTestTokenAccount(
         mint,
         owner,
         undefined,
-        undefined,
+        CONFIRM_OPTIONS,
         tokenProgram
     );
 }
@@ -65,7 +72,7 @@ export async function mintTokensTo(
         provider.wallet.publicKey,
         amount,
         [],
-        undefined,
+        CONFIRM_OPTIONS,
         tokenProgram
     );
 }
@@ -131,7 +138,7 @@ export async function createToken2022MintWithTransferHook(
         connection,
         createMintTx,
         [payer, mintKeypair],
-        { commitment: "confirmed" }
+        CONFIRM_OPTIONS
     );
 
     const hookProgram = new anchor.Program(
@@ -152,7 +159,7 @@ export async function createToken2022MintWithTransferHook(
             mint: mintKeypair.publicKey,
             systemProgram: SystemProgram.programId,
         })
-        .rpc({ commitment: "confirmed" });
+        .rpc(CONFIRM_OPTIONS);
 
     const [extraAccountMetaListPda] = PublicKey.findProgramAddressSync(
         [Buffer.from("extra-account-metas"), mintKeypair.publicKey.toBuffer()],
@@ -168,7 +175,7 @@ export async function createToken2022MintWithTransferHook(
             config: hookConfigPda,
             systemProgram: SystemProgram.programId,
         })
-        .rpc({ commitment: "confirmed" });
+        .rpc(CONFIRM_OPTIONS);
 
     return mintKeypair.publicKey;
 }
