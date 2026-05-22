@@ -15,5 +15,6 @@ pub use deposit_usdc::*;
 pub use initialize::*;
 pub use mint_aat_nft::*;
 pub use sell_waln::*;
+pub use start_round::*;
 pub use transfer_authority::*;
 pub use withdraw_usdc::*;

@@ -69,8 +69,12 @@ pub mod floor_program {
         admin::set_paused(ctx, paused)
     }
 
-    pub fn cancel_round(ctx: Context<CancelRound>) -> Result<()> {
-        admin::cancel_round(ctx)
+    pub fn cancel_round(ctx: Context<CancelRound>, round_index: u64) -> Result<()> {
+        admin::cancel_round(ctx, round_index)
+    }
+
+    pub fn start_round(ctx: Context<StartRound>, round_index: u64) -> Result<()> {
+        start_round::handler(ctx, round_index)
     }
 
     pub fn fund_treasury(ctx: Context<FundTreasury>, amount: u64) -> Result<()> {
@@ -87,10 +91,11 @@ pub mod floor_program {
 
     pub fn sell_waln<'info>(
         ctx: Context<'_, '_, 'info, 'info, SellWaln<'info>>,
+        round_index: u64,
         waln_amount: u64,
         hook_bumps: [u8; 4],
     ) -> Result<()> {
-        sell_waln::handler(ctx, waln_amount, hook_bumps)
+        sell_waln::handler(ctx, round_index, waln_amount, hook_bumps)
     }
 
     pub fn claim_waln<'info>(

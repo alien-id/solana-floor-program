@@ -1,10 +1,11 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::invoke_signed;
 use anchor_spl::associated_token::AssociatedToken;
-use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 use anchor_spl::token_2022::spl_token_2022::instruction::transfer_checked as build_transfer_checked_ix;
+use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
+
 use crate::errors::FloorError;
-use crate::seeds::{CONTRACT_STATE_SEED, ROUND_LOCKED_WALN_SEED, WALN_VAULT_SEED};
+use crate::seeds::{CONTRACT_STATE_SEED, ROUND_LOCKED_WALN_SEED, TREASURY_SEED, WALN_VAULT_SEED};
 use crate::state::{ProgramState, RoundLockedWaln};
 use crate::utils::{get_hook_program_id, validate_hook_accounts};
 
@@ -23,9 +24,17 @@ pub struct ClaimWaln<'info> {
     #[account(
         mut,
         seeds = [ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes()],
+        bump = round_locked_waln.bump,
+    )]
+    pub round_locked_waln: Account<'info, RoundLockedWaln>,
+
+    /// CHECK: Treasury PDA — receives rent refund when the round account closes
+    #[account(
+        mut,
+        seeds = [TREASURY_SEED],
         bump,
     )]
-    pub round_locked_waln: AccountLoader<'info, RoundLockedWaln>,
+    pub treasury: UncheckedAccount<'info>,
 
     pub waln_mint: InterfaceAccount<'info, Mint>,
 
@@ -54,7 +63,11 @@ pub struct ClaimWaln<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _round_index: u64, hook_bumps: [u8; 4]) -> Result<()> {
+pub fn handler<'info>(
+    ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>,
+    _round_index: u64,
+    hook_bumps: [u8; 4],
+) -> Result<()> {
     let state_bump;
     let waln_mint_key;
     {
@@ -62,31 +75,42 @@ pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _rou
         state_bump = state.bump;
         waln_mint_key = state.waln_mint;
     }
-    require!(ctx.accounts.waln_mint.key() == waln_mint_key, FloorError::InvalidMint);
+    require!(
+        ctx.accounts.waln_mint.key() == waln_mint_key,
+        FloorError::InvalidMint
+    );
 
     let investor_key = ctx.accounts.investor.key();
 
     let waln_amount;
+    let should_close;
     {
-        let mut round_locked_waln = ctx.accounts.round_locked_waln.load_mut()?;
-        let count = round_locked_waln.count as usize;
-
-        let idx = round_locked_waln.investors[..count]
-            .binary_search_by_key(&investor_key.to_bytes(), |a| a.investor.to_bytes())
-            .map_err(|_| error!(FloorError::InvalidInvestor))?;
-
-        let alloc = &mut round_locked_waln.investors[idx];
-
-        require!(alloc.claimed == 0, FloorError::AlreadyClaimed);
+        let rlw = &mut ctx.accounts.round_locked_waln;
+        require!(rlw.finalized, FloorError::NotYetUnlocked);
 
         let clock = Clock::get()?;
         require!(
-            clock.unix_timestamp >= alloc.unlock,
+            clock.unix_timestamp >= rlw.unlock,
             FloorError::NotYetUnlocked
         );
 
-        waln_amount = alloc.waln_amount;
-        alloc.claimed = 1;
+        let idx = rlw
+            .investors
+            .binary_search_by_key(&investor_key.to_bytes(), |a| a.investor.to_bytes())
+            .map_err(|_| error!(FloorError::InvalidInvestor))?;
+
+        {
+            let alloc = &mut rlw.investors[idx];
+            require!(!alloc.claimed, FloorError::AlreadyClaimed);
+            waln_amount = alloc.waln_amount;
+            alloc.claimed = true;
+        }
+
+        rlw.remaining_to_claim = rlw
+            .remaining_to_claim
+            .checked_sub(1)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+        should_close = rlw.remaining_to_claim == 0;
     }
 
     let seeds: &[&[u8]] = &[CONTRACT_STATE_SEED, &[state_bump]];
@@ -133,5 +157,19 @@ pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _rou
     }
 
     invoke_signed(&ix, &account_infos, signer)?;
+
+    if should_close {
+        let rlw_info = ctx.accounts.round_locked_waln.to_account_info();
+        let treasury_info = ctx.accounts.treasury.to_account_info();
+
+        let dest_starting = treasury_info.lamports();
+        **treasury_info.try_borrow_mut_lamports()? = dest_starting
+            .checked_add(rlw_info.lamports())
+            .ok_or(FloorError::ArithmeticOverflow)?;
+        **rlw_info.try_borrow_mut_lamports()? = 0;
+        rlw_info.assign(&System::id());
+        rlw_info.resize(0)?;
+    }
+
     Ok(())
 }

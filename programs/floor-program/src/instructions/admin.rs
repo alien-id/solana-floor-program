@@ -2,8 +2,8 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{program::invoke, system_instruction};
 
 use crate::errors::FloorError;
-use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, TREASURY_SEED};
-use crate::state::{InvestorPool, ProgramState};
+use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, ROUND_LOCKED_WALN_SEED, TREASURY_SEED};
+use crate::state::{InvestorPool, ProgramState, RoundLockedWaln};
 
 #[derive(Accounts)]
 pub struct AdminOnly<'info> {
@@ -62,7 +62,7 @@ pub struct SetInvestorUsdcUnlock<'info> {
         seeds = [INVESTOR_POOL_SEED],
         bump,
     )]
-    pub investor_pool: AccountLoader<'info, InvestorPool>,
+    pub investor_pool: Account<'info, InvestorPool>,
 }
 
 pub fn set_investor_usdc_unlock(
@@ -70,9 +70,9 @@ pub fn set_investor_usdc_unlock(
     investor: Pubkey,
     new_unlock_ts: i64,
 ) -> Result<()> {
-    let mut pool = ctx.accounts.investor_pool.load_mut()?;
-    let count = pool.count as usize;
-    let record = pool.investors[..count]
+    let pool = &mut ctx.accounts.investor_pool;
+    let record = pool
+        .investors
         .iter_mut()
         .find(|r| r.investor == investor)
         .ok_or(FloorError::InvalidInvestor)?;
@@ -110,6 +110,7 @@ pub struct FundTreasury<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(round_index: u64)]
 pub struct CancelRound<'info> {
     pub admin: Signer<'info>,
 
@@ -126,31 +127,59 @@ pub struct CancelRound<'info> {
         seeds = [INVESTOR_POOL_SEED],
         bump,
     )]
-    pub investor_pool: AccountLoader<'info, InvestorPool>,
+    pub investor_pool: Account<'info, InvestorPool>,
+
+    #[account(
+        mut,
+        seeds = [ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes()],
+        bump = round_locked_waln.bump,
+    )]
+    pub round_locked_waln: Account<'info, RoundLockedWaln>,
+
+    /// CHECK: Treasury PDA — receives rent refund
+    #[account(
+        mut,
+        seeds = [TREASURY_SEED],
+        bump,
+    )]
+    pub treasury: UncheckedAccount<'info>,
 }
 
-pub fn cancel_round(ctx: Context<CancelRound>) -> Result<()> {
+pub fn cancel_round(ctx: Context<CancelRound>, round_index: u64) -> Result<()> {
     {
         let mut state = ctx.accounts.contract_state.load_mut()?;
         require!(state.round_started == 1, FloorError::InvalidParameter);
         require!(state.current_round_waln == 0, FloorError::InvalidParameter);
+        require!(state.round_count == round_index, FloorError::InvalidParameter);
         state.round_started = 0;
         state.current_round_waln = 0;
         state.total_usdc_locked_for_round = 0;
     }
 
-    let mut pool = ctx.accounts.investor_pool.load_mut()?;
-    let count = pool.count as usize;
-    for record in pool.investors[..count].iter_mut() {
-        if record.usdc_locked_current_round == 0 {
-            continue;
+    {
+        let pool = &mut ctx.accounts.investor_pool;
+        for record in pool.investors.iter_mut() {
+            if record.usdc_locked_current_round == 0 {
+                continue;
+            }
+            record.usdc_deposited = record
+                .usdc_deposited
+                .checked_add(record.usdc_locked_current_round)
+                .ok_or(FloorError::ArithmeticOverflow)?;
+            record.usdc_locked_current_round = 0;
         }
-        record.usdc_deposited = record
-            .usdc_deposited
-            .checked_add(record.usdc_locked_current_round)
-            .ok_or(FloorError::ArithmeticOverflow)?;
-        record.usdc_locked_current_round = 0;
     }
+
+    // Close RoundLockedWaln, refund rent to treasury
+    let rlw_info = ctx.accounts.round_locked_waln.to_account_info();
+    let treasury_info = ctx.accounts.treasury.to_account_info();
+    let dest_starting = treasury_info.lamports();
+    **treasury_info.try_borrow_mut_lamports()? = dest_starting
+        .checked_add(rlw_info.lamports())
+        .ok_or(FloorError::ArithmeticOverflow)?;
+    **rlw_info.try_borrow_mut_lamports()? = 0;
+    rlw_info.assign(&System::id());
+    rlw_info.resize(0)?;
 
     Ok(())
 }

@@ -46,11 +46,11 @@ pub struct Initialize<'info> {
     #[account(
         init,
         payer = admin,
-        space = 8 + std::mem::size_of::<InvestorPool>(),
+        space = InvestorPool::space(0),
         seeds = [INVESTOR_POOL_SEED],
         bump,
     )]
-    pub investor_pool: AccountLoader<'info, InvestorPool>,
+    pub investor_pool: Account<'info, InvestorPool>,
 
     pub system_program: Program<'info, System>,
     pub usdc_token_program: Interface<'info, TokenInterface>,
@@ -92,9 +92,9 @@ pub fn handler(
     state.waln_dust_carryover = 0;
     state.total_usdc_locked_for_round = 0;
 
-    let mut pool = ctx.accounts.investor_pool.load_init()?;
+    let pool = &mut ctx.accounts.investor_pool;
     pool.bump = ctx.bumps.investor_pool;
-    pool.count = 0;
+    pool.investors = Vec::new();
 
     Ok(())
 }

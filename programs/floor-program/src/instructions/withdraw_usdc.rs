@@ -23,7 +23,7 @@ pub struct WithdrawUsdc<'info> {
         seeds = [INVESTOR_POOL_SEED],
         bump,
     )]
-    pub investor_pool: AccountLoader<'info, InvestorPool>,
+    pub investor_pool: Account<'info, InvestorPool>,
 
     pub usdc_mint: InterfaceAccount<'info, Mint>,
 
@@ -63,10 +63,10 @@ pub fn handler(ctx: Context<WithdrawUsdc>, amount: u64) -> Result<()> {
 
     {
         let investor_key = ctx.accounts.investor.key();
-        let mut pool = ctx.accounts.investor_pool.load_mut()?;
-        let count = pool.count as usize;
+        let pool = &mut ctx.accounts.investor_pool;
 
-        let record = pool.investors[..count]
+        let record = pool
+            .investors
             .iter_mut()
             .find(|r| r.investor == investor_key)
             .ok_or(FloorError::InvalidInvestor)?;
