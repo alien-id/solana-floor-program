@@ -50,4 +50,6 @@ pub enum FloorError {
     NoPendingAdmin,
     #[msg("USDC is still locked — withdrawal is not allowed before the unlock timestamp")]
     UsdcLocked,
+    #[msg("Cannot update AAT volume while investor funds are locked in an active round")]
+    RoundInProgress,
 }

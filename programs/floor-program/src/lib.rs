@@ -110,6 +110,17 @@ pub mod floor_program {
         mint_aat_nft::handler(ctx, aat_volume)
     }
 
+    pub fn update_aat_volume(ctx: Context<UpdateAatVolume>, new_aat_volume: u64) -> Result<()> {
+        update_aat_volume::handler(ctx, new_aat_volume)
+    }
+
+    pub fn remove_investor_from_pool(
+        ctx: Context<RemoveInvestorFromPool>,
+        investor: Pubkey,
+    ) -> Result<()> {
+        remove_investor_from_pool::handler(ctx, investor)
+    }
+
     pub fn transfer_authority(ctx: Context<TransferAuthority>) -> Result<()> {
         transfer_authority::transfer_authority(ctx)
     }
@@ -117,6 +128,4 @@ pub mod floor_program {
     pub fn accept_authority(ctx: Context<AcceptAuthority>) -> Result<()> {
         transfer_authority::accept_authority(ctx)
     }
-
-    // TODO: add instruction to delete the investor from pool if he has aat_volume 0 and if only program is paused, and current round is finalized and new is not started
 }

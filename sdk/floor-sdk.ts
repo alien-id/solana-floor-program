@@ -217,6 +217,30 @@ export class FloorSdk {
       .instruction();
   }
 
+  async updateAatVolumeIx(args: {
+    admin: PublicKey;
+    investor: PublicKey;
+    newAatVolume: BN;
+  }): Promise<TransactionInstruction> {
+    const [contractState] = this.contractStatePda();
+    const [investorPool] = this.investorPoolPda();
+    const [nftAuthority] = this.nftAuthorityPda();
+    const [mint] = this.aatNftMintPda(args.investor);
+
+    return this.program.methods
+      .updateAatVolume(args.newAatVolume)
+      .accounts({
+        admin: args.admin,
+        contractState,
+        investorPool,
+        investor: args.investor,
+        mint,
+        nftAuthority,
+        tokenProgram: TOKEN_2022_PROGRAM_ID,
+      } as any)
+      .instruction();
+  }
+
   async depositUsdcIx(args: {
     investor: PublicKey;
     investorUsdcAccount: PublicKey;
@@ -444,6 +468,12 @@ export class FloorSdk {
           treasury,
         } as any).instruction();
       },
+      removeInvestorFromPool: (investor: PublicKey): Promise<TransactionInstruction> =>
+        this.program.methods.removeInvestorFromPool(investor).accounts({
+          admin: adminPubkey,
+          contractState,
+          investorPool,
+        } as any).instruction(),
       transferAuthority: (newAdmin: PublicKey): Promise<TransactionInstruction> =>
         this.program.methods.transferAuthority().accounts({ admin: adminPubkey, newAdmin, contractState } as any).instruction(),
     };
