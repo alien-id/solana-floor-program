@@ -52,4 +52,6 @@ pub enum FloorError {
     NoPendingAdmin,
     #[msg("USDC is still locked — withdrawal is not allowed before the unlock timestamp")]
     UsdcLocked,
+    #[msg("Sale would leave an unpayable WALN dust remainder; sell the full remaining round capacity instead")]
+    SellLeavesUnpayableDust,
 }
