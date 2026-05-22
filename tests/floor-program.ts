@@ -121,6 +121,10 @@ describe("floor-program", () => {
     let walnVault: PublicKey;
     let investorPool: PublicKey;
 
+    // Rent tracking (set after initialize / deposit events)
+    let poolLamports0: number;
+    let poolLamports1: number;
+
     // Token-2022 walnMint keypair (generated once, used throughout)
     const walnMintKeypair = Keypair.generate();
 
@@ -508,6 +512,10 @@ describe("floor-program", () => {
                 })
             )
         );
+
+        const poolInfoInit = await provider.connection.getAccountInfo(investorPool);
+        poolLamports0 = poolInfoInit!.lamports;
+        console.log(`    [rent] investor_pool (0 investors) lamports: ${poolLamports0}, size: ${poolInfoInit!.data.length} bytes`);
 
         const hookProgram = new anchor.Program(
             require("../idl/alien_id_transfer_hook.json"),
@@ -995,6 +1003,10 @@ describe("floor-program", () => {
                 [investor1]
             );
 
+            const poolInfoAfter1 = await provider.connection.getAccountInfo(investorPool);
+            poolLamports1 = poolInfoAfter1!.lamports;
+            console.log(`    [rent] investor_pool (1 investor) lamports: ${poolLamports1}, size: ${poolInfoAfter1!.data.length} bytes (resize delta: +${poolLamports1 - poolLamports0} lamports)`);
+
             const entry = await sdk.fetchInvestorRecord(investor1.publicKey);
             assert.ok(entry!.investor.equals(investor1.publicKey));
             assert.ok(entry!.usdcDeposited.eq(INVESTOR1_USDC));
@@ -1019,6 +1031,9 @@ describe("floor-program", () => {
                 ),
                 [investor2]
             );
+
+            const poolInfoAfter2 = await provider.connection.getAccountInfo(investorPool);
+            console.log(`    [rent] investor_pool (2 investors) lamports: ${poolInfoAfter2!.lamports}, size: ${poolInfoAfter2!.data.length} bytes (resize delta: +${poolInfoAfter2!.lamports - poolLamports1} lamports)`);
 
             const entry = await sdk.fetchInvestorRecord(investor2.publicKey);
             assert.ok(entry!.investor.equals(investor2.publicKey));
@@ -1467,6 +1482,10 @@ describe("floor-program", () => {
                 )
             );
 
+            const [rlwPda0] = sdk.roundLockedWalnPda(new BN(0));
+            const rlwInfo0 = await provider.connection.getAccountInfo(rlwPda0);
+            console.log(`    [rent] round_locked_waln (round 0) lamports: ${rlwInfo0!.lamports}, size: ${rlwInfo0!.data.length} bytes`);
+
             const stateAfterStart = await sdk.program.account.programState.fetch(contractState);
             assert.equal(stateAfterStart.roundStarted, 1);
 
@@ -1615,20 +1634,18 @@ describe("floor-program", () => {
             const lw1 = await sdk.fetchInvestorAlloc(round0, investor1.publicKey);
             assert.ok(lw1!.investor.equals(investor1.publicKey));
             assert.equal(lw1!.walnAmount, 133333330000n);
-            assert.equal(lw1!.claimed, false);
 
             const lw2 = await sdk.fetchInvestorAlloc(round0, investor2.publicKey);
             assert.ok(lw2!.investor.equals(investor2.publicKey));
             assert.equal(lw2!.walnAmount, 66666660000n);
-            assert.equal(lw2!.claimed, false);
 
             // ---- verify variable-size RoundLockedWaln account size ----
-            // RoundLockedWaln.space(n) = 8 (disc) + 8 round_index + 1 bump + 8 unlock + 4 remaining + 1 finalized + 4 vec_len + n * 41
+            // RoundLockedWaln.space(n) = 8 (disc) + 8 round_index + 1 bump + 8 unlock + 4 remaining + 1 finalized + 4 vec_len + n * 40
             const [roundLockedWaln0Pda] = sdk.roundLockedWalnPda(round0);
             const rlwInfo = await provider.connection.getAccountInfo(roundLockedWaln0Pda);
             assert.isNotNull(rlwInfo, "RoundLockedWaln[0] must exist after trigger");
             const participantCount = 2;
-            const expectedRlwSize = 8 + (8 + 1 + 8 + 4 + 1 + 4) + participantCount * 41;
+            const expectedRlwSize = 8 + (8 + 1 + 8 + 4 + 1 + 4) + participantCount * 40;
             assert.equal(
                 rlwInfo!.data.length,
                 expectedRlwSize,
@@ -1653,6 +1670,10 @@ describe("floor-program", () => {
                     })
                 )
             );
+
+            const [rlwPda1] = sdk.roundLockedWalnPda(new BN(1));
+            const rlwInfo1 = await provider.connection.getAccountInfo(rlwPda1);
+            console.log(`    [rent] round_locked_waln (round 1) lamports: ${rlwInfo1!.lamports}, size: ${rlwInfo1!.data.length} bytes`);
 
             const state = await sdk.program.account.programState.fetch(contractState);
             assert.equal(state.roundStarted, 1);
@@ -1696,7 +1717,7 @@ describe("floor-program", () => {
             assert.equal(walnAfter - walnBefore, 133_333_330_000n);
 
             const lw = await sdk.fetchInvestorAlloc(round0, investor1.publicKey);
-            assert.equal(lw!.claimed, true);
+            assert.equal(lw!.walnAmount, 0n, "walnAmount should be 0 after claim");
         });
 
         it("allows claim attempt when contract is paused (fails for other reason, not ContractPaused)", async () => {
@@ -2070,15 +2091,20 @@ describe("floor-program", () => {
 
             // Start round first — snapshots current_round_floor_price = 100_000 (0.10 USDC)
             const stateBeforeStart = await sdk.program.account.programState.fetch(contractState);
+            const priceIsoRoundIdx = new BN(stateBeforeStart.roundCount.toNumber());
             await provider.sendAndConfirm(
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.startRoundIx({
                         caller: admin.publicKey,
-                        roundIndex: new BN(stateBeforeStart.roundCount.toNumber()),
+                        roundIndex: priceIsoRoundIdx,
                     })
                 )
             );
+
+            const [rlwPdaPriceIso] = sdk.roundLockedWalnPda(priceIsoRoundIdx);
+            const rlwInfoPriceIso = await provider.connection.getAccountInfo(rlwPdaPriceIso);
+            console.log(`    [rent] round_locked_waln (price-iso round ${priceIsoRoundIdx}) lamports: ${rlwInfoPriceIso!.lamports}, size: ${rlwInfoPriceIso!.data.length} bytes`);
 
             // Change floor price AFTER round starts — must not affect current round's snapshot
             await provider.sendAndConfirm(
@@ -2161,15 +2187,20 @@ describe("floor-program", () => {
             );
             assert.equal(stateAfterTrigger.roundStarted, 0, "round closed, next not yet started");
 
+            const priceIsoNextRoundIdx = new BN(stateAfterTrigger.roundCount.toNumber());
             await provider.sendAndConfirm(
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.startRoundIx({
                         caller: admin.publicKey,
-                        roundIndex: new BN(stateAfterTrigger.roundCount.toNumber()),
+                        roundIndex: priceIsoNextRoundIdx,
                     })
                 )
             );
+
+            const [rlwPdaPriceIsoNext] = sdk.roundLockedWalnPda(priceIsoNextRoundIdx);
+            const rlwInfoPriceIsoNext = await provider.connection.getAccountInfo(rlwPdaPriceIsoNext);
+            console.log(`    [rent] round_locked_waln (price-iso next round ${priceIsoNextRoundIdx}) lamports: ${rlwInfoPriceIsoNext!.lamports}, size: ${rlwInfoPriceIsoNext!.data.length} bytes`);
 
             const stateAfter = await sdk.program.account.programState.fetch(contractState);
             assert.ok(
@@ -2293,15 +2324,20 @@ describe("floor-program", () => {
             );
             assert.equal(stateAfterTrigger.roundStarted, 0, "round closed, next not yet started");
 
+            const sizeIsoNextRoundIdx = new BN(stateAfterTrigger.roundCount.toNumber());
             await provider.sendAndConfirm(
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.startRoundIx({
                         caller: admin.publicKey,
-                        roundIndex: new BN(stateAfterTrigger.roundCount.toNumber()),
+                        roundIndex: sizeIsoNextRoundIdx,
                     })
                 )
             );
+
+            const [rlwPdaSizeIso] = sdk.roundLockedWalnPda(sizeIsoNextRoundIdx);
+            const rlwInfoSizeIso = await provider.connection.getAccountInfo(rlwPdaSizeIso);
+            console.log(`    [rent] round_locked_waln (size-iso next round ${sizeIsoNextRoundIdx}) lamports: ${rlwInfoSizeIso!.lamports}, size: ${rlwInfoSizeIso!.data.length} bytes`);
 
             const stateAfter = await sdk.program.account.programState.fetch(contractState);
             assert.ok(
@@ -2400,15 +2436,20 @@ describe("floor-program", () => {
 
             assert.equal(stateAfter.roundStarted, 0, "round closed after trigger");
 
+            const dustRoundIdx = new BN(stateAfter.roundCount.toNumber());
             await provider.sendAndConfirm(
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.startRoundIx({
                         caller: admin.publicKey,
-                        roundIndex: new BN(stateAfter.roundCount.toNumber()),
+                        roundIndex: dustRoundIdx,
                     })
                 )
             );
+
+            const [rlwPdaDust] = sdk.roundLockedWalnPda(dustRoundIdx);
+            const rlwInfoDust = await provider.connection.getAccountInfo(rlwPdaDust);
+            console.log(`    [rent] round_locked_waln (dust round ${dustRoundIdx}) lamports: ${rlwInfoDust!.lamports}, size: ${rlwInfoDust!.data.length} bytes`);
         });
 
         it("investors receive dust bonus from previous round's carryover", async () => {
@@ -2508,15 +2549,19 @@ describe("floor-program", () => {
         before(async () => {
             const state = await sdk.program.account.programState.fetch(contractState);
             if (state.roundStarted === 0) {
+                const cancelRoundIdx = new BN(state.roundCount.toNumber());
                 await provider.sendAndConfirm(
                     new Transaction().add(
                         ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                         await sdk.startRoundIx({
                             caller: admin.publicKey,
-                            roundIndex: new BN(state.roundCount.toNumber()),
+                            roundIndex: cancelRoundIdx,
                         })
                     )
                 );
+                const [rlwPdaCancel] = sdk.roundLockedWalnPda(cancelRoundIdx);
+                const rlwInfoCancel = await provider.connection.getAccountInfo(rlwPdaCancel);
+                console.log(`    [rent] round_locked_waln (cancel round ${cancelRoundIdx}) lamports: ${rlwInfoCancel!.lamports}, size: ${rlwInfoCancel!.data.length} bytes`);
             }
         });
 
@@ -2746,6 +2791,9 @@ describe("floor-program", () => {
                 );
             }
 
+            const poolInfo100 = await provider.connection.getAccountInfo(investorPool);
+            console.log(`    [rent] investor_pool (101 investors) lamports: ${poolInfo100!.lamports}, size: ${poolInfo100!.data.length} bytes (per-investor resize delta: +${(poolInfo100!.lamports - poolLamports1) / 99} lamports avg)`);
+
             // 6. Mint extra wALN to seller
             await mintTokensTo(
                 provider,
@@ -2759,15 +2807,19 @@ describe("floor-program", () => {
             //    Start round (if not started), trigger it, then start next round with all 100 investors.
             let stateNow = await sdk.program.account.programState.fetch(contractState);
             if (stateNow.roundStarted === 0) {
+                const intermediateRoundIdx = new BN(stateNow.roundCount.toNumber());
                 await provider.sendAndConfirm(
                     new Transaction().add(
                         ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                         await sdk.startRoundIx({
                             caller: admin.publicKey,
-                            roundIndex: new BN(stateNow.roundCount.toNumber()),
+                            roundIndex: intermediateRoundIdx,
                         })
                     )
                 );
+                const [rlwPdaIntermediate] = sdk.roundLockedWalnPda(intermediateRoundIdx);
+                const rlwInfoIntermediate = await provider.connection.getAccountInfo(rlwPdaIntermediate);
+                console.log(`    [rent] round_locked_waln (intermediate round ${intermediateRoundIdx}) lamports: ${rlwInfoIntermediate!.lamports}, size: ${rlwInfoIntermediate!.data.length} bytes`);
                 stateNow = await sdk.program.account.programState.fetch(contractState);
             }
 
@@ -2799,15 +2851,20 @@ describe("floor-program", () => {
             );
 
             const stateAfterTrigger = await sdk.program.account.programState.fetch(contractState);
+            const bigRoundIndex = new BN(stateAfterTrigger.roundCount.toNumber());
             await provider.sendAndConfirm(
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.startRoundIx({
                         caller: admin.publicKey,
-                        roundIndex: new BN(stateAfterTrigger.roundCount.toNumber()),
+                        roundIndex: bigRoundIndex,
                     })
                 )
             );
+
+            const [rlwPdaBig] = sdk.roundLockedWalnPda(bigRoundIndex);
+            const rlwInfoBig = await provider.connection.getAccountInfo(rlwPdaBig);
+            console.log(`    [rent] round_locked_waln (100-investor round) lamports: ${rlwInfoBig!.lamports}, size: ${rlwInfoBig!.data.length} bytes`);
         });
 
         it("triggers round end with all 100 investors (99 new + 1 original)", async () => {
@@ -2870,7 +2927,6 @@ describe("floor-program", () => {
                 const alloc = await sdk.fetchInvestorAlloc(roundIdx, inv.keypair.publicKey);
                 assert.ok(alloc !== null, `new investor[${i}] has an allocation`);
                 assert.ok(alloc!.walnAmount > 0n, `new investor[${i}] has walnAmount > 0`);
-                assert.equal(alloc!.claimed, false, `new investor[${i}] not yet claimed`);
             }
 
             // Verify pool state via InvestorRecord entries

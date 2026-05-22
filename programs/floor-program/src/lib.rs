@@ -117,4 +117,6 @@ pub mod floor_program {
     pub fn accept_authority(ctx: Context<AcceptAuthority>) -> Result<()> {
         transfer_authority::accept_authority(ctx)
     }
+
+    // TODO: add instruction to delete the investor from pool if he has aat_volume 0 and if only program is paused, and current round is finalized and new is not started
 }

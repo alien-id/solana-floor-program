@@ -101,9 +101,9 @@ pub fn handler<'info>(
 
         {
             let alloc = &mut rlw.investors[idx];
-            require!(!alloc.claimed, FloorError::AlreadyClaimed);
+            require!(alloc.waln_amount > 0, FloorError::AlreadyClaimed);
             waln_amount = alloc.waln_amount;
-            alloc.claimed = true;
+            alloc.waln_amount = 0;
         }
 
         rlw.remaining_to_claim = rlw

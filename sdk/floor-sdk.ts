@@ -384,13 +384,12 @@ export class FloorSdk {
   /**
    * Fetch the RoundLockedWaln account and return the InvestorAlloc for a given investor.
    * unlock is now a field on the parent struct (not per-alloc).
-   * InvestorAlloc layout (41 bytes): 32 pubkey + 8 waln_amount + 1 claimed (bool).
+   * InvestorAlloc layout (40 bytes): 32 pubkey + 8 waln_amount. waln_amount == 0 means claimed.
    */
   async fetchInvestorAlloc(roundIndex: BN, investor: PublicKey): Promise<{
     investor: PublicKey;
     walnAmount: bigint;
     unlock: bigint;
-    claimed: boolean;
   } | null> {
     const [roundLockedWalnPda] = this.roundLockedWalnPda(roundIndex);
     let rlw: any;
@@ -407,7 +406,6 @@ export class FloorSdk {
       investor: alloc.investor as PublicKey,
       walnAmount: BigInt(alloc.walnAmount.toString()),
       unlock: BigInt((rlw.unlock as BN).toString()),
-      claimed: alloc.claimed as boolean,
     };
   }
 

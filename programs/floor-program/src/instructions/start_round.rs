@@ -145,7 +145,6 @@ pub fn handler(ctx: Context<StartRound>, round_index: u64) -> Result<()> {
         entries.push(InvestorAlloc {
             investor: r.investor,
             waln_amount: base_waln,
-            claimed: false,
         });
         total_usdc_locked = total_usdc_locked
             .checked_add(usdc_locked)

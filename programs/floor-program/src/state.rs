@@ -4,11 +4,10 @@ use anchor_lang::prelude::*;
 pub struct InvestorAlloc {
     pub investor: Pubkey,
     pub waln_amount: u64,
-    pub claimed: bool, // remove this field and decrease waln_amount to zero during claim
 }
 
 impl InvestorAlloc {
-    pub const SIZE: usize = 32 + 8 + 1;
+    pub const SIZE: usize = 32 + 8;
 }
 
 #[account]
