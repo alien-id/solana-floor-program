@@ -1028,6 +1028,18 @@ describe("floor-program", () => {
             assert.ok(
                 state.totalUsdcInLobby.eq(INVESTOR1_USDC.add(INVESTOR2_USDC))
             );
+
+            // InvestorPool dynamic growth: space(n) = 8 (disc) + 1 (bump) + 4 (vec_len) + n * 80 = 13 + n*80
+            const [investorPoolPda] = sdk.investorPoolPda();
+            const poolInfo = await provider.connection.getAccountInfo(investorPoolPda);
+            assert.isNotNull(poolInfo, "InvestorPool must exist");
+            const nInvestors = 2;
+            const expectedPoolSize = 13 + nInvestors * 80;
+            assert.equal(
+                poolInfo!.data.length,
+                expectedPoolSize,
+                `InvestorPool size should be ${expectedPoolSize} for ${nInvestors} investors`
+            );
         });
 
         it("investor1 adds more USDC in a second deposit", async () => {
@@ -1437,23 +1449,36 @@ describe("floor-program", () => {
     });
 
     // ---------------------------------------------------------------------------
-    // 5. sell_waln — partial sale (auto-starts round, no trigger)
+    // 5. sell_waln — partial sale (after explicit start_round, no trigger)
     // ---------------------------------------------------------------------------
-    describe("sell_waln partial (auto-start)", () => {
-        before(async () => {
-            const tx = new Transaction().add(
-                anchor.web3.SystemProgram.transfer({
-                    fromPubkey: admin.publicKey,
-                    toPubkey: contractState,
-                    lamports: 10_000_000,
-                })
-            );
-            await provider.sendAndConfirm(tx);
-        });
-
-        it("auto-starts round and sells wALN (no trigger)", async () => {
+    describe("sell_waln partial (after start_round)", () => {
+        it("starts round 0, then sells wALN (no trigger)", async () => {
             const stateBefore = await sdk.program.account.programState.fetch(contractState);
             assert.equal(stateBefore.roundStarted, 0);
+            assert.ok(stateBefore.roundCount.eqn(0));
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                    await sdk.startRoundIx({
+                        caller: admin.publicKey,
+                        roundIndex: new BN(0),
+                    })
+                )
+            );
+
+            const stateAfterStart = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(stateAfterStart.roundStarted, 1);
+
+            // investor1: min(5e9, floor(20e6 * 100000 / 150000)) = 13_333_333
+            const entry1AfterStart = await sdk.fetchInvestorRecord(investor1.publicKey);
+            assert.ok(entry1AfterStart!.usdcLockedCurrentRound.eq(new BN(13_333_333)));
+            assert.ok(entry1AfterStart!.usdcDeposited.eq(new BN(4_986_666_667)));
+
+            // investor2: min(5e9, floor(20e6 * 50000 / 150000)) = 6_666_666
+            const entry2AfterStart = await sdk.fetchInvestorRecord(investor2.publicKey);
+            assert.ok(entry2AfterStart!.usdcLockedCurrentRound.eq(new BN(6_666_666)));
+            assert.ok(entry2AfterStart!.usdcDeposited.eq(new BN(4_993_333_334)));
 
             const sellerUsdcBefore = await getTokenBalance(provider, sellerUsdcAcc);
             const walnVaultBefore = await getTokenBalance(provider, walnVault, TOKEN_2022_PROGRAM_ID);
@@ -1466,6 +1491,7 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        roundIndex: new BN(0),
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: SELL_AMOUNT_PARTIAL,
                     })
@@ -1478,7 +1504,7 @@ describe("floor-program", () => {
                 commitment: "confirmed",
                 maxSupportedTransactionVersion: 0
             });
-            console.log(`    [CU] sell_waln PARTIAL (round-start, 2 investors): ${partialTx?.meta?.computeUnitsConsumed}`);
+            console.log(`    [CU] sell_waln PARTIAL (2 investors): ${partialTx?.meta?.computeUnitsConsumed}`);
 
             const sellerUsdcAfter = await getTokenBalance(provider, sellerUsdcAcc);
             const walnVaultAfter = await getTokenBalance(provider, walnVault, TOKEN_2022_PROGRAM_ID);
@@ -1495,16 +1521,6 @@ describe("floor-program", () => {
             const state = await sdk.program.account.programState.fetch(contractState);
             assert.ok(state.currentRoundWaln.eq(SELL_AMOUNT_PARTIAL));
             assert.equal(state.roundStarted, 1);
-
-            // investor1: min(5e9, floor(20e6 * 100000 / 150000)) = 13_333_333
-            const entry1 = await sdk.fetchInvestorRecord(investor1.publicKey);
-            assert.ok(entry1!.usdcLockedCurrentRound.eq(new BN(13_333_333)));
-            assert.ok(entry1!.usdcDeposited.eq(new BN(4_986_666_667)));
-
-            // investor2: min(5e9, floor(20e6 * 50000 / 150000)) = 6_666_666
-            const entry2 = await sdk.fetchInvestorRecord(investor2.publicKey);
-            assert.ok(entry2!.usdcLockedCurrentRound.eq(new BN(6_666_666)));
-            assert.ok(entry2!.usdcDeposited.eq(new BN(4_993_333_334)));
         });
 
         it("rejects sell when contract is paused", async () => {
@@ -1521,6 +1537,7 @@ describe("floor-program", () => {
                             sellerUsdcAccount: sellerUsdcAcc,
                             walnMint,
                             usdcMint,
+                            roundIndex: new BN(0),
                             walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                             walnAmount: new BN(1),
                         })
@@ -1542,10 +1559,9 @@ describe("floor-program", () => {
     // 6. sell_waln — round-triggering sale
     // ---------------------------------------------------------------------------
     describe("sell_waln round trigger", () => {
-        it("triggers round end + round start when threshold is hit", async () => {
+        it("triggers round end when threshold is hit, then starts next round", async () => {
             const round0 = new BN(0);
             const [roundRecord0] = sdk.roundRecordPda(round0);
-            const [roundLockedWaln0] = sdk.roundLockedWalnPda(round0);
 
             const sellerUsdcBefore = await getTokenBalance(provider, sellerUsdcAcc);
 
@@ -1557,11 +1573,11 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        roundIndex: new BN(0),
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: SELL_AMOUNT_TRIGGER,
                         roundTriggerAccounts: [
                             {pubkey: roundRecord0, isWritable: true},
-                            {pubkey: roundLockedWaln0, isWritable: true},
                         ],
                     })
                 ),
@@ -1573,7 +1589,7 @@ describe("floor-program", () => {
                 commitment: "confirmed",
                 maxSupportedTransactionVersion: 0
             });
-            console.log(`    [CU] sell_waln TRIGGER (round-end + round-start, 2 investors): ${triggerTx?.meta?.computeUnitsConsumed}`);
+            console.log(`    [CU] sell_waln TRIGGER (round-end, 2 investors): ${triggerTx?.meta?.computeUnitsConsumed}`);
 
             const sellerUsdcAfter = await getTokenBalance(provider, sellerUsdcAcc);
             assert.equal(
@@ -1589,13 +1605,13 @@ describe("floor-program", () => {
             assert.equal(rr.totalAatVolumeAtTrigger, 150000n);
             assert.equal(rr.participantCount, 2);
 
-            // ---- verify ContractState updated ----
-            const state = await sdk.program.account.programState.fetch(contractState);
-            assert.ok(state.roundCount.eqn(1));
-            assert.ok(state.currentRoundWaln.eqn(0));
-            assert.equal(state.roundStarted, 1); // auto-started next round
+            // ---- verify ContractState updated: round closed ----
+            const stateAfterTrigger = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(stateAfterTrigger.roundCount.eqn(1));
+            assert.ok(stateAfterTrigger.currentRoundWaln.eqn(0));
+            assert.equal(stateAfterTrigger.roundStarted, 0);
 
-            // ---- verify RoundLockedWaln records ----
+            // ---- verify RoundLockedWaln records (finalized) ----
             const lw1 = await sdk.fetchInvestorAlloc(round0, investor1.publicKey);
             assert.ok(lw1!.investor.equals(investor1.publicKey));
             assert.equal(lw1!.walnAmount, 133333330000n);
@@ -1606,6 +1622,41 @@ describe("floor-program", () => {
             assert.equal(lw2!.walnAmount, 66666660000n);
             assert.equal(lw2!.claimed, false);
 
+            // ---- verify variable-size RoundLockedWaln account size ----
+            // RoundLockedWaln.space(n) = 8 (disc) + 8 round_index + 1 bump + 8 unlock + 4 remaining + 1 finalized + 4 vec_len + n * 41
+            const [roundLockedWaln0Pda] = sdk.roundLockedWalnPda(round0);
+            const rlwInfo = await provider.connection.getAccountInfo(roundLockedWaln0Pda);
+            assert.isNotNull(rlwInfo, "RoundLockedWaln[0] must exist after trigger");
+            const participantCount = 2;
+            const expectedRlwSize = 8 + (8 + 1 + 8 + 4 + 1 + 4) + participantCount * 41;
+            assert.equal(
+                rlwInfo!.data.length,
+                expectedRlwSize,
+                `RoundLockedWaln size should be ${expectedRlwSize} for ${participantCount} participants`
+            );
+
+            assert.ok(stateAfterTrigger.roundCount.eqn(1));
+            const entry1Pre = await sdk.fetchInvestorRecord(investor1.publicKey);
+            assert.ok(entry1Pre!.usdcCommitted.eq(new BN(13_333_333)));
+            assert.ok(entry1Pre!.walnPurchasedTotal.eq(new BN("133333330000")));
+            const entry2Pre = await sdk.fetchInvestorRecord(investor2.publicKey);
+            assert.ok(entry2Pre!.usdcCommitted.eq(new BN(6_666_666)));
+            assert.ok(entry2Pre!.walnPurchasedTotal.eq(new BN("66666660000")));
+
+            // ---- start round 1 ----
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                    await sdk.startRoundIx({
+                        caller: admin.publicKey,
+                        roundIndex: new BN(1),
+                    })
+                )
+            );
+
+            const state = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(state.roundStarted, 1);
+
             const entry1 = await sdk.fetchInvestorRecord(investor1.publicKey);
             assert.ok(entry1!.usdcLockedCurrentRound.eq(new BN(13_333_333)));
             assert.ok(entry1!.usdcDeposited.eq(new BN(4_973_333_334)));
@@ -1613,11 +1664,6 @@ describe("floor-program", () => {
             const entry2 = await sdk.fetchInvestorRecord(investor2.publicKey);
             assert.ok(entry2!.usdcLockedCurrentRound.eq(new BN(6_666_666)));
             assert.ok(entry2!.usdcDeposited.eq(new BN(4_986_666_668)));
-
-            assert.ok(entry1!.usdcCommitted.eq(new BN(13_333_333)));
-            assert.ok(entry1!.walnPurchasedTotal.eq(new BN("133333330000")));
-            assert.ok(entry2!.usdcCommitted.eq(new BN(6_666_666)));
-            assert.ok(entry2!.walnPurchasedTotal.eq(new BN("66666660000")));
         });
     });
 
@@ -1701,8 +1747,12 @@ describe("floor-program", () => {
             }
         });
 
-        it("investor2 claims their round-0 wALN", async () => {
+        it("investor2 claims their round-0 wALN and RoundLockedWaln closes", async () => {
             const round0 = new BN(0);
+            const [roundLockedWaln0] = sdk.roundLockedWalnPda(round0);
+            const [treasury] = sdk.treasuryPda();
+
+            const treasuryBalanceBefore = await provider.connection.getBalance(treasury);
             const walnBefore = await getTokenBalance(provider, investor2WalnAcc, TOKEN_2022_PROGRAM_ID);
 
             await provider.sendAndConfirm(
@@ -1720,6 +1770,64 @@ describe("floor-program", () => {
 
             const walnAfter = await getTokenBalance(provider, investor2WalnAcc, TOKEN_2022_PROGRAM_ID);
             assert.equal(walnAfter - walnBefore, 66_666_660_000n);
+
+            const rlwInfo = await provider.connection.getAccountInfo(roundLockedWaln0);
+            assert.isNull(rlwInfo, "RoundLockedWaln[0] should be closed after last claim");
+
+            const treasuryBalanceAfter = await provider.connection.getBalance(treasury);
+            assert.ok(
+                treasuryBalanceAfter > treasuryBalanceBefore,
+                "treasury should receive rent refund from closed RoundLockedWaln"
+            );
+        });
+    });
+
+    // ---------------------------------------------------------------------------
+    // 7b. start_round — negative cases (round 1 is active when these run)
+    // ---------------------------------------------------------------------------
+    describe("start_round negative cases", () => {
+        it("fails when round is already active (round_started == 1)", async () => {
+            const state = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(state.roundStarted, 1, "precondition: round must be active");
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                        await sdk.startRoundIx({
+                            caller: admin.publicKey,
+                            roundIndex: new BN(state.roundCount.toNumber()),
+                        })
+                    )
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.ok(
+                    e.toString().includes("InvalidParameter") || e.logs?.some((l: string) => l.includes("InvalidParameter")),
+                    `expected InvalidParameter, got: ${e.toString()}`
+                );
+            }
+        });
+
+        it("fails when round_index != round_count (wrong index)", async () => {
+            const state = await sdk.program.account.programState.fetch(contractState);
+            const wrongIndex = new BN(state.roundCount.toNumber() + 10);
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                        await sdk.startRoundIx({
+                            caller: admin.publicKey,
+                            roundIndex: wrongIndex,
+                        })
+                    )
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.ok(
+                    e.toString().includes("InvalidParameter") || e.logs?.some((l: string) => l.includes("InvalidParameter")),
+                    `expected InvalidParameter, got: ${e.toString()}`
+                );
+            }
         });
     });
 
@@ -1809,6 +1917,9 @@ describe("floor-program", () => {
         });
 
         it("rejects a sell that would exceed remaining round capacity", async () => {
+            const state0 = await sdk.program.account.programState.fetch(contractState);
+            const roundBn = new BN(state0.roundCount.toNumber());
+
             try {
                 await provider.sendAndConfirm(
                     new Transaction().add(
@@ -1818,12 +1929,9 @@ describe("floor-program", () => {
                             sellerUsdcAccount: sellerUsdcAcc,
                             walnMint,
                             usdcMint,
+                            roundIndex: roundBn,
                             walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                             walnAmount: new BN(201 * WALN_UNIT),
-                            roundTriggerAccounts: [
-                                {pubkey: sdk.roundRecordPda(new BN(2))[0], isWritable: true},
-                                {pubkey: sdk.roundLockedWalnPda(new BN(2))[0], isWritable: true},
-                            ],
                         })
                     ),
                     [seller]
@@ -1840,6 +1948,9 @@ describe("floor-program", () => {
         });
 
         it("partial sell within cap accumulates without triggering", async () => {
+            const state0 = await sdk.program.account.programState.fetch(contractState);
+            const roundBn = new BN(state0.roundCount.toNumber());
+
             await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.sellWalnIx({
@@ -1848,6 +1959,7 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        roundIndex: roundBn,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: new BN(100 * WALN_UNIT),
                     })
@@ -1861,6 +1973,9 @@ describe("floor-program", () => {
         });
 
         it("rejects sell exceeding remaining capacity mid-round", async () => {
+            const state0 = await sdk.program.account.programState.fetch(contractState);
+            const roundBn = new BN(state0.roundCount.toNumber());
+
             try {
                 await provider.sendAndConfirm(
                     new Transaction().add(
@@ -1870,12 +1985,9 @@ describe("floor-program", () => {
                             sellerUsdcAccount: sellerUsdcAcc,
                             walnMint,
                             usdcMint,
+                            roundIndex: roundBn,
                             walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                             walnAmount: new BN(101 * WALN_UNIT),
-                            roundTriggerAccounts: [
-                                {pubkey: sdk.roundRecordPda(new BN(2))[0], isWritable: true},
-                                {pubkey: sdk.roundLockedWalnPda(new BN(2))[0], isWritable: true},
-                            ],
                         })
                     ),
                     [seller]
@@ -1888,10 +2000,9 @@ describe("floor-program", () => {
 
         it("exact remaining capacity triggers round cleanly with current_round_waln=0", async () => {
             const stateBefore = await sdk.program.account.programState.fetch(contractState);
-            const roundIndex = stateBefore.roundCount; // 2
+            const roundIndex = stateBefore.roundCount; // 1
             const roundBn = new BN(roundIndex.toNumber());
             const [roundRecord] = sdk.roundRecordPda(roundBn);
-            const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
 
             await provider.sendAndConfirm(
                 new Transaction().add(
@@ -1901,11 +2012,11 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        roundIndex: roundBn,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: new BN(100 * WALN_UNIT),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
-                            {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
                 ),
@@ -1921,7 +2032,7 @@ describe("floor-program", () => {
                 stateAfter.roundCount.eqn(roundIndex.toNumber() + 1),
                 "round_count should have incremented"
             );
-            assert.equal(stateAfter.roundStarted, 1, "next round auto-started");
+            assert.equal(stateAfter.roundStarted, 0, "round closed, next round not yet started");
         });
     });
 
@@ -1930,12 +2041,6 @@ describe("floor-program", () => {
     // ---------------------------------------------------------------------------
     describe("price isolation — set_floor_price applies to next round only", () => {
         before(async () => {
-            await provider.sendAndConfirm(
-                new Transaction().add(
-                    await sdk.admin(admin.publicKey).setFloorPrice(new BN(100 * USDC_UNIT))
-                )
-            );
-
             await mintTokensTo(provider, usdcMint, investor1UsdcAcc, BigInt(20_000 * USDC_UNIT));
             await mintTokensTo(provider, usdcMint, investor2UsdcAcc, BigInt(20_000 * USDC_UNIT));
             await provider.sendAndConfirm(
@@ -1962,6 +2067,25 @@ describe("floor-program", () => {
                 ),
                 [investor2]
             );
+
+            // Start round first — snapshots current_round_floor_price = 100_000 (0.10 USDC)
+            const stateBeforeStart = await sdk.program.account.programState.fetch(contractState);
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                    await sdk.startRoundIx({
+                        caller: admin.publicKey,
+                        roundIndex: new BN(stateBeforeStart.roundCount.toNumber()),
+                    })
+                )
+            );
+
+            // Change floor price AFTER round starts — must not affect current round's snapshot
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.admin(admin.publicKey).setFloorPrice(new BN(100 * USDC_UNIT))
+                )
+            );
         });
 
         it("current_round_floor_price is not changed by set_floor_price mid-round", async () => {
@@ -1971,10 +2095,12 @@ describe("floor-program", () => {
                 state.currentRoundFloorPrice.eq(new BN(100_000)),
                 `current_round_floor_price should still be $0.10, got ${state.currentRoundFloorPrice.toString()}`
             );
-            assert.equal(state.roundStarted, 1, "round 3 is active");
+            assert.equal(state.roundStarted, 1, "round is active");
         });
 
         it("seller receives USDC at snapshotted price ($0.10), not updated price (100 USDC)", async () => {
+            const state0 = await sdk.program.account.programState.fetch(contractState);
+            const roundBn = new BN(state0.roundCount.toNumber());
             const sellerUsdcBefore = await getTokenBalance(provider, sellerUsdcAcc);
 
             await provider.sendAndConfirm(
@@ -1985,6 +2111,7 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        roundIndex: roundBn,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: new BN(100 * WALN_UNIT),
                     })
@@ -2003,10 +2130,9 @@ describe("floor-program", () => {
 
         it("next round uses new floor price (100 USDC) after current round triggers", async () => {
             const stateBefore = await sdk.program.account.programState.fetch(contractState);
-            const roundIndex = stateBefore.roundCount; // 3
+            const roundIndex = stateBefore.roundCount;
             const roundBn = new BN(roundIndex.toNumber());
             const [roundRecord] = sdk.roundRecordPda(roundBn);
-            const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
 
             await provider.sendAndConfirm(
                 new Transaction().add(
@@ -2017,27 +2143,40 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        roundIndex: roundBn,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: new BN(100 * WALN_UNIT),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
-                            {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
                 ),
                 [seller]
             );
 
-            const stateAfter = await sdk.program.account.programState.fetch(contractState);
+            const stateAfterTrigger = await sdk.program.account.programState.fetch(contractState);
             assert.ok(
-                stateAfter.roundCount.eqn(roundIndex.toNumber() + 1),
+                stateAfterTrigger.roundCount.eqn(roundIndex.toNumber() + 1),
                 "round_count should have incremented"
             );
+            assert.equal(stateAfterTrigger.roundStarted, 0, "round closed, next not yet started");
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                    await sdk.startRoundIx({
+                        caller: admin.publicKey,
+                        roundIndex: new BN(stateAfterTrigger.roundCount.toNumber()),
+                    })
+                )
+            );
+
+            const stateAfter = await sdk.program.account.programState.fetch(contractState);
             assert.ok(
                 stateAfter.currentRoundFloorPrice.eq(new BN(100 * USDC_UNIT)),
                 `new round must use updated floor price 100 USDC, got ${stateAfter.currentRoundFloorPrice.toString()}`
             );
-            assert.equal(stateAfter.roundStarted, 1, "next round auto-started with new price");
+            assert.equal(stateAfter.roundStarted, 1, "next round started with new price");
             assert.ok(
                 stateAfter.currentRoundSizeWaln.eq(new BN(200 * WALN_UNIT)),
                 `current_round_size_waln should still be 200 wALN for new round, got ${stateAfter.currentRoundSizeWaln.toString()}`
@@ -2092,10 +2231,13 @@ describe("floor-program", () => {
                 state.currentRoundSizeWaln.eq(new BN(200 * WALN_UNIT)),
                 `current_round_size_waln should still be 200 wALN, got ${state.currentRoundSizeWaln.toString()}`
             );
-            assert.equal(state.roundStarted, 1, "round 4 is active");
+            assert.equal(state.roundStarted, 1, "round is active");
         });
 
         it("rejects sell exceeding snapshotted round size (200 wALN) even though live size is 400 wALN", async () => {
+            const state0 = await sdk.program.account.programState.fetch(contractState);
+            const roundBn = new BN(state0.roundCount.toNumber());
+
             try {
                 await provider.sendAndConfirm(
                     new Transaction().add(
@@ -2105,6 +2247,7 @@ describe("floor-program", () => {
                             sellerUsdcAccount: sellerUsdcAcc,
                             walnMint,
                             usdcMint,
+                            roundIndex: roundBn,
                             walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                             walnAmount: new BN(201 * WALN_UNIT),
                         })
@@ -2119,10 +2262,9 @@ describe("floor-program", () => {
 
         it("next round uses new round size (400 wALN) after current round triggers", async () => {
             const stateBefore = await sdk.program.account.programState.fetch(contractState);
-            const roundIndex = stateBefore.roundCount; // 4
+            const roundIndex = stateBefore.roundCount;
             const roundBn = new BN(roundIndex.toNumber());
             const [roundRecord] = sdk.roundRecordPda(roundBn);
-            const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
 
             await provider.sendAndConfirm(
                 new Transaction().add(
@@ -2133,27 +2275,40 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        roundIndex: roundBn,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: new BN(200 * WALN_UNIT),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
-                            {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
                 ),
                 [seller]
             );
 
-            const stateAfter = await sdk.program.account.programState.fetch(contractState);
+            const stateAfterTrigger = await sdk.program.account.programState.fetch(contractState);
             assert.ok(
-                stateAfter.roundCount.eqn(roundIndex.toNumber() + 1),
+                stateAfterTrigger.roundCount.eqn(roundIndex.toNumber() + 1),
                 "round_count should have incremented"
             );
+            assert.equal(stateAfterTrigger.roundStarted, 0, "round closed, next not yet started");
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                    await sdk.startRoundIx({
+                        caller: admin.publicKey,
+                        roundIndex: new BN(stateAfterTrigger.roundCount.toNumber()),
+                    })
+                )
+            );
+
+            const stateAfter = await sdk.program.account.programState.fetch(contractState);
             assert.ok(
                 stateAfter.currentRoundSizeWaln.eq(new BN(400 * WALN_UNIT)),
                 `new round must use updated round size 400 wALN, got ${stateAfter.currentRoundSizeWaln.toString()}`
             );
-            assert.equal(stateAfter.roundStarted, 1, "next round auto-started with new round size");
+            assert.equal(stateAfter.roundStarted, 1, "next round started with new round size");
         });
     });
 
@@ -2208,7 +2363,6 @@ describe("floor-program", () => {
             const roundIndex = stateBefore.roundCount;
             const roundBn = new BN(roundIndex.toNumber());
             const [roundRecord] = sdk.roundRecordPda(roundBn);
-            const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
 
             const walnInRound = BigInt(stateBefore.currentRoundSizeWaln.toString());
 
@@ -2221,11 +2375,11 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        roundIndex: roundBn,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
-                            {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
                 ),
@@ -2242,6 +2396,18 @@ describe("floor-program", () => {
                 totalWalnPurchased + newDust,
                 walnInRound + oldDust,
                 `dust invariant failed: purchased(${totalWalnPurchased}) + newDust(${newDust}) != walnInRound(${walnInRound}) + oldDust(${oldDust})`
+            );
+
+            assert.equal(stateAfter.roundStarted, 0, "round closed after trigger");
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                    await sdk.startRoundIx({
+                        caller: admin.publicKey,
+                        roundIndex: new BN(stateAfter.roundCount.toNumber()),
+                    })
+                )
             );
         });
 
@@ -2262,7 +2428,6 @@ describe("floor-program", () => {
             const roundIndex = stateBefore.roundCount;
             const roundBn = new BN(roundIndex.toNumber());
             const [roundRecord] = sdk.roundRecordPda(roundBn);
-            const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
 
             await provider.sendAndConfirm(
                 new Transaction().add(
@@ -2273,11 +2438,11 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        roundIndex: roundBn,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
-                            {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
                 ),
@@ -2340,15 +2505,31 @@ describe("floor-program", () => {
     // 15. cancel_round
     // ---------------------------------------------------------------------------
     describe("cancel_round", () => {
+        before(async () => {
+            const state = await sdk.program.account.programState.fetch(contractState);
+            if (state.roundStarted === 0) {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                        await sdk.startRoundIx({
+                            caller: admin.publicKey,
+                            roundIndex: new BN(state.roundCount.toNumber()),
+                        })
+                    )
+                );
+            }
+        });
+
         it("non-admin cannot cancel a round", async () => {
             const state = await sdk.program.account.programState.fetch(contractState);
             if (state.roundStarted !== 1) {
                 return;
             }
+            const roundBn = new BN(state.roundCount.toNumber());
             try {
                 await provider.sendAndConfirm(
                     new Transaction().add(
-                        await sdk.admin(investor1.publicKey).cancelRound()
+                        await sdk.admin(investor1.publicKey).cancelRound(roundBn)
                     ),
                     [investor1]
                 );
@@ -2366,10 +2547,11 @@ describe("floor-program", () => {
             if (state.roundStarted === 1) {
                 return;
             }
+            const roundBn = new BN(state.roundCount.toNumber());
             try {
                 await provider.sendAndConfirm(
                     new Transaction().add(
-                        await sdk.admin(admin.publicKey).cancelRound()
+                        await sdk.admin(admin.publicKey).cancelRound(roundBn)
                     )
                 );
                 assert.fail("should have rejected cancel when no round active");
@@ -2387,6 +2569,10 @@ describe("floor-program", () => {
                 return;
             }
 
+            const roundBn = new BN(stateBefore.roundCount.toNumber());
+            const [roundLockedWalnPda] = sdk.roundLockedWalnPda(roundBn);
+            const [treasury] = sdk.treasuryPda();
+
             const entry1Before = await sdk.fetchInvestorRecord(investor1.publicKey);
             const entry2Before = await sdk.fetchInvestorRecord(investor2.publicKey);
 
@@ -2397,9 +2583,11 @@ describe("floor-program", () => {
 
             assert.ok(locked1 > 0n || locked2 > 0n, "at least one investor should have locked funds");
 
+            const treasuryBalanceBefore = await provider.connection.getBalance(treasury);
+
             await provider.sendAndConfirm(
                 new Transaction().add(
-                    await sdk.admin(admin.publicKey).cancelRound()
+                    await sdk.admin(admin.publicKey).cancelRound(roundBn)
                 )
             );
 
@@ -2407,6 +2595,12 @@ describe("floor-program", () => {
             assert.equal(stateAfter.roundStarted, 0, "round_started must be 0 after cancel");
             assert.equal(stateAfter.currentRoundWaln.toNumber(), 0, "current_round_waln must be 0 after cancel");
             assert.equal(stateAfter.totalUsdcLockedForRound.toNumber(), 0, "total_usdc_locked_for_round must be 0 after cancel");
+
+            const rlwInfo = await provider.connection.getAccountInfo(roundLockedWalnPda);
+            assert.isNull(rlwInfo, "RoundLockedWaln PDA should be closed after cancel");
+
+            const treasuryBalanceAfter = await provider.connection.getBalance(treasury);
+            assert.ok(treasuryBalanceAfter > treasuryBalanceBefore, "treasury should receive rent refund");
 
             const entry1After = await sdk.fetchInvestorRecord(investor1.publicKey);
             const entry2After = await sdk.fetchInvestorRecord(investor2.publicKey);
@@ -2466,7 +2660,7 @@ describe("floor-program", () => {
     // ---------------------------------------------------------------------------
     // 100-investor scale test
     // ---------------------------------------------------------------------------
-    describe.skip("100-investor pool scale test", () => {
+    describe("100-investor pool scale test", () => {
         const NUM_NEW = 99;
 
         interface NewInvestor {
@@ -2510,7 +2704,8 @@ describe("floor-program", () => {
                 inv.walnAcc = await createTestTokenAccount(
                     provider,
                     walnMint,
-                    inv.keypair.publicKey
+                    inv.keypair.publicKey,
+                    TOKEN_2022_PROGRAM_ID
                 );
                 await mintTokensTo(
                     provider,
@@ -2556,15 +2751,28 @@ describe("floor-program", () => {
                 provider,
                 walnMint,
                 sellerWalnAcc,
-                BigInt(600 * WALN_UNIT)
+                BigInt(600 * WALN_UNIT),
+                TOKEN_2022_PROGRAM_ID
             );
 
             // 7. Complete the current active round (only investor1 and investor2 are locked).
-            //    After this trigger, round N+1 auto-starts and locks all 102 investors.
-            const stateNow = await sdk.program.account.programState.fetch(contractState);
+            //    Start round (if not started), trigger it, then start next round with all 100 investors.
+            let stateNow = await sdk.program.account.programState.fetch(contractState);
+            if (stateNow.roundStarted === 0) {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                        await sdk.startRoundIx({
+                            caller: admin.publicKey,
+                            roundIndex: new BN(stateNow.roundCount.toNumber()),
+                        })
+                    )
+                );
+                stateNow = await sdk.program.account.programState.fetch(contractState);
+            }
+
             const currentRoundIdx = new BN(stateNow.roundCount.toString());
             const [roundRecordNow] = sdk.roundRecordPda(currentRoundIdx);
-            const [roundLockedWalnNow] = sdk.roundLockedWalnPda(currentRoundIdx);
 
             const remainingToSell = new BN(
                 stateNow.currentRoundSizeWaln.toString()
@@ -2579,25 +2787,35 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        roundIndex: currentRoundIdx,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: remainingToSell,
                         roundTriggerAccounts: [
                             {pubkey: roundRecordNow, isWritable: true},
-                            {pubkey: roundLockedWalnNow, isWritable: true},
                         ],
                     })
                 ),
                 [seller]
             );
+
+            const stateAfterTrigger = await sdk.program.account.programState.fetch(contractState);
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                    await sdk.startRoundIx({
+                        caller: admin.publicKey,
+                        roundIndex: new BN(stateAfterTrigger.roundCount.toNumber()),
+                    })
+                )
+            );
         });
 
         it("triggers round end with all 100 investors (99 new + 1 original)", async () => {
             const stateBefore = await sdk.program.account.programState.fetch(contractState);
-            assert.equal(stateBefore.roundStarted, 1, "round should be auto-started");
+            assert.equal(stateBefore.roundStarted, 1, "round should be started via startRoundIx");
 
             const roundIdx = new BN(stateBefore.roundCount.toString());
             const [roundRecord] = sdk.roundRecordPda(roundIdx);
-            const [roundLockedWaln] = sdk.roundLockedWalnPda(roundIdx);
 
             const roundSizeWaln = new BN(stateBefore.currentRoundSizeWaln.toString());
 
@@ -2610,11 +2828,11 @@ describe("floor-program", () => {
                         sellerUsdcAccount: sellerUsdcAcc,
                         walnMint,
                         usdcMint,
+                        roundIndex: roundIdx,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         walnAmount: roundSizeWaln,
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
-                            {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
                 ),

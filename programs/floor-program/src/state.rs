@@ -1,12 +1,10 @@
 use anchor_lang::prelude::*;
 
-pub const MAX_INVESTORS: usize = 100;
-
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug)]
 pub struct InvestorAlloc {
     pub investor: Pubkey,
     pub waln_amount: u64,
-    pub claimed: bool,
+    pub claimed: bool, // remove this field and decrease waln_amount to zero during claim
 }
 
 impl InvestorAlloc {
@@ -18,6 +16,7 @@ pub struct RoundLockedWaln {
     pub round_index: u64,
     pub bump: u8,
     pub unlock: i64,
+    // how many participants should claim to close pda
     pub remaining_to_claim: u32,
     pub finalized: bool,
     pub investors: Vec<InvestorAlloc>,

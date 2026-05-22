@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { AnchorProvider, BN } from "@coral-xyz/anchor";
-import { PublicKey, Transaction } from "@solana/web3.js";
+import { ComputeBudgetProgram, PublicKey, Transaction } from "@solana/web3.js";
 import {
   getOrCreateAssociatedTokenAccount,
   TOKEN_2022_PROGRAM_ID,
@@ -47,10 +47,23 @@ async function main() {
   );
 
   const [contractStatePda] = sdk.contractStatePda();
-  const stateAccount = await sdk.program.account.programState.fetch(contractStatePda);
-  const currentRoundIndex = new BN(stateAccount.roundCount.toString());
-  const [roundRecord] = sdk.roundRecordPda(currentRoundIndex);
-  const [roundLockedWaln] = sdk.roundLockedWalnPda(currentRoundIndex);
+  let stateAccount = await sdk.program.account.programState.fetch(contractStatePda);
+
+  if (stateAccount.roundStarted === 0) {
+    const roundIndex = new BN(stateAccount.roundCount.toString());
+    console.log("Round not started — calling start_round for index", roundIndex.toString());
+    const startIx = await sdk.startRoundIx({ caller: payer.publicKey, roundIndex });
+    const startTx = new Transaction().add(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+      startIx
+    );
+    const startSig = await provider.sendAndConfirm(startTx, [payer]);
+    console.log("start_round tx:", startSig);
+    stateAccount = await sdk.program.account.programState.fetch(contractStatePda);
+  }
+
+  const roundIndex = new BN(stateAccount.roundCount.toString());
+  const [roundRecord] = sdk.roundRecordPda(roundIndex);
 
   const ix = await sdk.sellWalnIx({
     seller: payer.publicKey,
@@ -58,11 +71,11 @@ async function main() {
     sellerUsdcAccount: sellerUsdcAccount.address,
     walnMint,
     usdcMint,
+    roundIndex,
     walnAmount,
     walnTokenProgram: TOKEN_2022_PROGRAM_ID,
     roundTriggerAccounts: [
       { pubkey: roundRecord, isWritable: true },
-      { pubkey: roundLockedWaln, isWritable: true },
     ],
   });
 

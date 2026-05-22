@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { AnchorProvider } from "@coral-xyz/anchor";
+import { AnchorProvider, BN } from "@coral-xyz/anchor";
 import { Transaction } from "@solana/web3.js";
 import {
   loadKeypairFromEnv,
@@ -13,7 +13,12 @@ async function main() {
   const provider = createProviderWithPayer(envProvider, payer);
   const sdk = createSdk(provider);
 
-  const ix = await sdk.admin(payer.publicKey).cancelRound();
+  const [contractStatePda] = sdk.contractStatePda();
+  const stateAccount = await sdk.program.account.programState.fetch(contractStatePda);
+  const roundIndex = new BN(stateAccount.roundCount.toString());
+  console.log("Cancelling round index:", roundIndex.toString());
+
+  const ix = await sdk.admin(payer.publicKey).cancelRound(roundIndex);
 
   const tx = new Transaction().add(ix);
   const sig = await provider.sendAndConfirm(tx, [payer]);

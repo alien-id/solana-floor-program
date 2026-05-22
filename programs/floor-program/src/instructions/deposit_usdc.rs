@@ -6,7 +6,7 @@ use anchor_spl::token_interface::{
 
 use crate::errors::FloorError;
 use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, USDC_VAULT_SEED};
-use crate::state::{InvestorPool, InvestorRecord, ProgramState, MAX_INVESTORS};
+use crate::state::{InvestorPool, InvestorRecord, ProgramState};
 use crate::utils::verify_aat_nft_and_get_allocation;
 
 #[derive(Accounts)]
@@ -90,11 +90,6 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
         .any(|r| r.investor == investor_key);
 
     if !exists {
-        require!(
-            ctx.accounts.investor_pool.investors.len() < MAX_INVESTORS,
-            FloorError::InvestorPoolFull
-        );
-
         let new_len = ctx.accounts.investor_pool.investors.len() + 1;
         let new_size = InvestorPool::space(new_len);
         let pool_info = ctx.accounts.investor_pool.to_account_info();

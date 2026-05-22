@@ -145,8 +145,8 @@ export class FloorSdk {
     const raw = await this.program.account.investorPool.fetch(investorPool) as any;
     return {
       bump: raw.bump,
-      count: raw.count,
-      investors: raw.investors.slice(0, raw.count),
+      count: raw.investors.length,
+      investors: raw.investors,
     };
   }
 
@@ -270,14 +270,33 @@ export class FloorSdk {
       .instruction();
   }
 
+  async startRoundIx(args: {
+    caller: PublicKey;
+    roundIndex: BN;
+  }): Promise<TransactionInstruction> {
+    const [contractState] = this.contractStatePda();
+    const [investorPool] = this.investorPoolPda();
+    const [roundLockedWaln] = this.roundLockedWalnPda(args.roundIndex);
+    const [treasury] = this.treasuryPda();
+    return this.program.methods
+      .startRound(args.roundIndex)
+      .accounts({
+        caller: args.caller,
+        contractState,
+        investorPool,
+        roundLockedWaln,
+        treasury,
+        systemProgram: SystemProgram.programId,
+      } as any)
+      .instruction();
+  }
+
   /**
    * Build a sellWaln instruction.
    *
-   * roundTriggerAccounts format (new architecture):
-   *   [roundRecord, lockedWaln_investor1, lockedWaln_investor2, ...]
-   *
-   * Only needed when the sell will trigger round-end (current_round_waln + amount >= round_size).
-   * investor_pool is always passed as a named account (not remaining accounts).
+   * roundTriggerAccounts: only the RoundRecord account is needed in remaining_accounts
+   * when the sell closes the round. round_locked_waln is now a named account derived
+   * from roundIndex.
    */
   async sellWalnIx(args: {
     seller: PublicKey;
@@ -285,6 +304,7 @@ export class FloorSdk {
     sellerUsdcAccount: PublicKey;
     walnMint: PublicKey;
     usdcMint: PublicKey;
+    roundIndex: BN;
     walnAmount: BN;
     walnTokenProgram?: PublicKey;
     usdcTokenProgram?: PublicKey;
@@ -294,6 +314,8 @@ export class FloorSdk {
     const [walnVault] = this.walnVaultPda();
     const [usdcVault] = this.usdcVaultPda();
     const [investorPool] = this.investorPoolPda();
+    const [roundLockedWaln] = this.roundLockedWalnPda(args.roundIndex);
+    const [treasury] = this.treasuryPda();
     const { accounts: hookAccounts, bumps: hookBumps } = await buildHookAccountsWithBumps(
       this.program.provider.connection,
       args.seller,
@@ -305,17 +327,19 @@ export class FloorSdk {
       isWritable: a.isWritable,
     }));
     return this.program.methods
-      .sellWaln(args.walnAmount, hookBumps)
+      .sellWaln(args.roundIndex, args.walnAmount, hookBumps)
       .accounts({
         seller: args.seller,
         contractState,
         investorPool,
+        roundLockedWaln,
         walnMint: args.walnMint,
         usdcMint: args.usdcMint,
         sellerWalnAccount: args.sellerWalnAccount,
         sellerUsdcAccount: args.sellerUsdcAccount,
         walnVault,
         usdcVault,
+        treasury,
         walnTokenProgram: args.walnTokenProgram ?? TOKEN_PROGRAM_ID,
         usdcTokenProgram: args.usdcTokenProgram ?? TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
@@ -334,6 +358,7 @@ export class FloorSdk {
     const [contractState] = this.contractStatePda();
     const [walnVault] = this.walnVaultPda();
     const [roundLockedWaln] = this.roundLockedWalnPda(args.roundIndex);
+    const [treasury] = this.treasuryPda();
     const { accounts: hookAccounts, bumps: hookBumps } = await buildHookAccountsWithBumps(
       this.program.provider.connection,
       contractState,
@@ -346,6 +371,7 @@ export class FloorSdk {
         investor: args.investor,
         contractState,
         roundLockedWaln,
+        treasury,
         walnMint: args.walnMint,
         investorWalnAccount: args.investorWalnAccount,
         walnVault,
@@ -356,13 +382,9 @@ export class FloorSdk {
   }
 
   /**
-   * Decode the RoundLockedWaln account and return the InvestorAlloc for a given investor.
-   * Layout per InvestorAlloc (56 bytes):
-   *   [0..32]  investor: Pubkey
-   *   [32..40] waln_amount: u64 LE
-   *   [40..48] unlock: i64 LE
-   *   [48]     claimed: u8
-   *   [49..56] _pad
+   * Fetch the RoundLockedWaln account and return the InvestorAlloc for a given investor.
+   * unlock is now a field on the parent struct (not per-alloc).
+   * InvestorAlloc layout (41 bytes): 32 pubkey + 8 waln_amount + 1 claimed (bool).
    */
   async fetchInvestorAlloc(roundIndex: BN, investor: PublicKey): Promise<{
     investor: PublicKey;
@@ -371,25 +393,22 @@ export class FloorSdk {
     claimed: boolean;
   } | null> {
     const [roundLockedWalnPda] = this.roundLockedWalnPda(roundIndex);
-    const info = await this.provider.connection.getAccountInfo(roundLockedWalnPda);
-    if (!info) return null;
-
-    const buf = Buffer.from(info.data);
-    const count = buf.readUInt32LE(8 + 8);
-    const ALLOC_SIZE = 56;
-    const ALLOC_OFFSET = 8 + 16;
-
-    for (let i = 0; i < count; i++) {
-      const off = ALLOC_OFFSET + i * ALLOC_SIZE;
-      const key = new PublicKey(buf.subarray(off, off + 32));
-      if (key.equals(investor)) {
-        const walnAmount = buf.readBigUInt64LE(off + 32);
-        const unlock = buf.readBigInt64LE(off + 40);
-        const claimed = buf.readUInt8(off + 48) !== 0;
-        return { investor: key, walnAmount, unlock, claimed };
-      }
+    let rlw: any;
+    try {
+      rlw = await this.program.account.roundLockedWaln.fetch(roundLockedWalnPda);
+    } catch {
+      return null;
     }
-    return null;
+    const alloc = (rlw.investors as any[]).find((a: any) =>
+      (a.investor as PublicKey).equals(investor)
+    );
+    if (!alloc) return null;
+    return {
+      investor: alloc.investor as PublicKey,
+      walnAmount: BigInt(alloc.walnAmount.toString()),
+      unlock: BigInt((rlw.unlock as BN).toString()),
+      claimed: alloc.claimed as boolean,
+    };
   }
 
   admin(adminPubkey: PublicKey) {
@@ -416,8 +435,17 @@ export class FloorSdk {
         this.program.methods.setPaused(paused).accounts(accounts as any).instruction(),
       fundTreasury: (amount: BN): Promise<TransactionInstruction> =>
         this.program.methods.fundTreasury(amount).accounts(accounts as any).instruction(),
-      cancelRound: (): Promise<TransactionInstruction> =>
-        this.program.methods.cancelRound().accounts({ admin: adminPubkey, contractState, investorPool } as any).instruction(),
+      cancelRound: (roundIndex: BN): Promise<TransactionInstruction> => {
+        const [roundLockedWaln] = this.roundLockedWalnPda(roundIndex);
+        const [treasury] = this.treasuryPda();
+        return this.program.methods.cancelRound(roundIndex).accounts({
+          admin: adminPubkey,
+          contractState,
+          investorPool,
+          roundLockedWaln,
+          treasury,
+        } as any).instruction();
+      },
       transferAuthority: (newAdmin: PublicKey): Promise<TransactionInstruction> =>
         this.program.methods.transferAuthority().accounts({ admin: adminPubkey, newAdmin, contractState } as any).instruction(),
     };

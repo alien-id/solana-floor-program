@@ -1,8 +1,10 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
+    log::sol_log_data,
     program::{invoke, invoke_signed},
     system_instruction,
 };
+use anchor_lang::Discriminator;
 use anchor_spl::token_2022::spl_token_2022::instruction::transfer_checked as build_transfer_checked_ix;
 use anchor_spl::token_interface::{
     transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
@@ -341,6 +343,11 @@ fn finalize_round<'info>(
     rlw.remaining_to_claim = participant_count;
     rlw.finalized = true;
 
+    const ALLOC_LOG_LEN: usize = 8 + 8 + 32 + 8 + 8 + 8;
+    let alloc_disc = InvestorAllocated::DISCRIMINATOR;
+    let round_index_le = round_index.to_le_bytes();
+    let unlock_le = unlock_timestamp.to_le_bytes();
+
     for alloc in rlw.investors.iter() {
         let usdc_spent_for = u64::try_from(
             (alloc.waln_amount as u128)
@@ -351,13 +358,15 @@ fn finalize_round<'info>(
         )
         .unwrap_or(0);
 
-        emit!(InvestorAllocated {
-            round_index,
-            investor: alloc.investor,
-            waln_amount: alloc.waln_amount,
-            usdc_spent: usdc_spent_for,
-            unlock: unlock_timestamp,
-        });
+        let mut buf = [0u8; ALLOC_LOG_LEN];
+        buf[0..8].copy_from_slice(&alloc_disc);
+        buf[8..16].copy_from_slice(&round_index_le);
+        buf[16..48].copy_from_slice(alloc.investor.as_ref());
+        buf[48..56].copy_from_slice(&alloc.waln_amount.to_le_bytes());
+        buf[56..64].copy_from_slice(&usdc_spent_for.to_le_bytes());
+        buf[64..72].copy_from_slice(&unlock_le);
+
+        sol_log_data(&[&buf]);
     }
 
     emit!(RoundClosed {
