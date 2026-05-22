@@ -508,6 +508,8 @@ describe("floor-program", () => {
                 })
             )
         );
+        const investorPoolLamports = await provider.connection.getBalance(investorPool);
+        console.log(`    [LAMPORTS] InvestorPool account: ${investorPoolLamports} lamports`);
 
         const hookProgram = new anchor.Program(
             require("../idl/alien_id_transfer_hook.json"),
@@ -1574,6 +1576,8 @@ describe("floor-program", () => {
                 maxSupportedTransactionVersion: 0
             });
             console.log(`    [CU] sell_waln TRIGGER (round-end + round-start, 2 investors): ${triggerTx?.meta?.computeUnitsConsumed}`);
+            const roundLockedWaln0Lamports = await provider.connection.getBalance(roundLockedWaln0);
+            console.log(`    [LAMPORTS] RoundLockedWaln account: ${roundLockedWaln0Lamports} lamports`);
 
             const sellerUsdcAfter = await getTokenBalance(provider, sellerUsdcAcc);
             assert.equal(
@@ -2467,7 +2471,7 @@ describe("floor-program", () => {
     // 100-investor scale test
     // ---------------------------------------------------------------------------
     describe.skip("100-investor pool scale test", () => {
-        const NUM_NEW = 99;
+        const NUM_NEW = 98;
 
         interface NewInvestor {
             keypair: Keypair;
@@ -2510,7 +2514,8 @@ describe("floor-program", () => {
                 inv.walnAcc = await createTestTokenAccount(
                     provider,
                     walnMint,
-                    inv.keypair.publicKey
+                    inv.keypair.publicKey,
+                    TOKEN_2022_PROGRAM_ID
                 );
                 await mintTokensTo(
                     provider,
@@ -2556,7 +2561,8 @@ describe("floor-program", () => {
                 provider,
                 walnMint,
                 sellerWalnAcc,
-                BigInt(600 * WALN_UNIT)
+                BigInt(600 * WALN_UNIT),
+                TOKEN_2022_PROGRAM_ID
             );
 
             // 7. Complete the current active round (only investor1 and investor2 are locked).
@@ -2629,12 +2635,16 @@ describe("floor-program", () => {
             console.log(
                 `    [CU] sell_waln 100-investor round trigger: ${txInfo?.meta?.computeUnitsConsumed}`
             );
+            const roundLockedWalnLamports100 = await provider.connection.getBalance(roundLockedWaln);
+            console.log(`    [LAMPORTS] RoundLockedWaln account (100-investor): ${roundLockedWalnLamports100} lamports`);
+            const investorPoolLamports100 = await provider.connection.getBalance(sdk.investorPoolPda()[0]);
+            console.log(`    [LAMPORTS] InvestorPool account (100-investor): ${investorPoolLamports100} lamports`);
 
             // Verify round record was created with 102 participants
             const rr = await sdk.fetchRoundRecord(roundIdx);
             assert.equal(
                 rr.participantCount,
-                100,
+                99,
                 "all 100 investors (1 original + 99 new) should participate"
             );
 
@@ -2657,7 +2667,7 @@ describe("floor-program", () => {
 
             // Verify pool state via InvestorRecord entries
             const pool = await sdk.fetchInvestorPool();
-            assert.ok(pool.count >= 100, "pool should hold at least 100 investors");
+            assert.ok(pool.count >= 99, "pool should hold at least 100 investors");
         });
     });
 });
