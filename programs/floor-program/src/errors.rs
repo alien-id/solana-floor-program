@@ -32,8 +32,6 @@ pub enum FloorError {
     InvalidMintAccountSpace,
     #[msg("Mint does not match the configured mint for this contract")]
     InvalidMint,
-    #[msg("Cannot withdraw while funds are locked in an active round")]
-    FundsLocked,
     #[msg("Floor price and round size must be greater than zero")]
     InvalidParameter,
     #[msg("Total wALN allocation across all NFTs would exceed 1_000_000 (100%)")]
