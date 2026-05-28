@@ -86,14 +86,6 @@ export class FloorSdk {
     );
   }
 
-  /** @deprecated Use investorPoolPda() + fetchInvestorPool() instead */
-  lobbyEntryPda(investor: PublicKey): [PublicKey, number] {
-    return PublicKey.findProgramAddressSync(
-      [Buffer.from("lobby_entry"), investor.toBuffer()],
-      this.programId
-    );
-  }
-
   roundLockedWalnPda(roundIndex: BN): [PublicKey, number] {
     const roundBuf = roundIndex.toArrayLike(Buffer, "le", 8);
     return PublicKey.findProgramAddressSync(
