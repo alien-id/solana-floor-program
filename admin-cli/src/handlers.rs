@@ -338,6 +338,37 @@ pub fn handle_fund_treasury(program: &Program<Arc<Keypair>>, amount_lamports: u6
     Ok(())
 }
 
+pub fn handle_withdraw_treasury(
+    program: &Program<Arc<Keypair>>,
+    amount_lamports: u64,
+) -> Result<()> {
+    let program_id = program.id();
+    let (contract_state, _) = get_contract_state_address(&program_id);
+    let (treasury, _) = get_treasury_address(&program_id);
+
+    println!(
+        "Withdrawing {} lamports ({:.9} SOL) from treasury...",
+        amount_lamports,
+        amount_lamports as f64 / 1e9
+    );
+
+    let tx = program
+        .request()
+        .accounts(floor_program::accounts::FundTreasury {
+            admin: program.payer(),
+            contract_state,
+            treasury,
+            system_program: system_program::ID,
+        })
+        .args(floor_program::instruction::WithdrawTreasury {
+            amount: amount_lamports,
+        })
+        .send()?;
+
+    println!("Transaction successful: {}", tx);
+    Ok(())
+}
+
 pub fn handle_transfer_authority(
     program: &Program<Arc<Keypair>>,
     new_admin: Pubkey,

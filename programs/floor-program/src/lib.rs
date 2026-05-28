@@ -77,6 +77,10 @@ pub mod floor_program {
         admin::fund_treasury(ctx, amount)
     }
 
+    pub fn withdraw_treasury(ctx: Context<FundTreasury>, amount: u64) -> Result<()> {
+        admin::withdraw_treasury(ctx, amount)
+    }
+
     pub fn deposit_usdc(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
         deposit_usdc::handler(ctx, usdc_amount)
     }

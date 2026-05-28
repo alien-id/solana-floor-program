@@ -416,6 +416,8 @@ export class FloorSdk {
         this.program.methods.setPaused(paused).accounts(accounts as any).instruction(),
       fundTreasury: (amount: BN): Promise<TransactionInstruction> =>
         this.program.methods.fundTreasury(amount).accounts(accounts as any).instruction(),
+      withdrawTreasury: (amount: BN): Promise<TransactionInstruction> =>
+        this.program.methods.withdrawTreasury(amount).accounts(accounts as any).instruction(),
       cancelRound: (): Promise<TransactionInstruction> =>
         this.program.methods.cancelRound().accounts({ admin: adminPubkey, contractState, investorPool } as any).instruction(),
       transferAuthority: (newAdmin: PublicKey): Promise<TransactionInstruction> =>
