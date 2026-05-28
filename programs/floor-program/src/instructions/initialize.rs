@@ -1,5 +1,9 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
+use spl_token_2022::extension::{
+    transfer_fee::TransferFeeConfig, BaseStateWithExtensions, StateWithExtensions,
+};
+use spl_token_2022::state::Mint as SplMint;
 
 use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, USDC_VAULT_SEED, WALN_VAULT_SEED};
 use crate::state::{InvestorPool, ProgramState};
@@ -67,6 +71,17 @@ pub fn handler(
     use crate::errors::FloorError;
     require!(floor_price_usdc > 0, FloorError::InvalidParameter);
     require!(round_size_waln > 0, FloorError::InvalidParameter);
+
+    {
+        let waln_mint_info = ctx.accounts.waln_mint.to_account_info();
+        let waln_mint_data = waln_mint_info.try_borrow_data()?;
+        let waln_mint_with_ext = StateWithExtensions::<SplMint>::unpack(&waln_mint_data)
+            .map_err(|_| error!(FloorError::InvalidParameter))?;
+        require!(
+            waln_mint_with_ext.get_extension::<TransferFeeConfig>().is_err(),
+            FloorError::InvalidParameter
+        );
+    }
 
     let mut state = ctx.accounts.contract_state.load_init()?;
     state.admin = ctx.accounts.admin.key();
