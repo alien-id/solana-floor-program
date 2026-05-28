@@ -67,6 +67,7 @@ pub fn handler(
     use crate::errors::FloorError;
     require!(floor_price_usdc > 0, FloorError::InvalidParameter);
     require!(round_size_waln > 0, FloorError::InvalidParameter);
+    require!(lock_period_seconds >= 0, FloorError::InvalidParameter);
 
     let mut state = ctx.accounts.contract_state.load_init()?;
     state.admin = ctx.accounts.admin.key();
