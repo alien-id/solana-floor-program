@@ -294,7 +294,7 @@ export class FloorSdk {
     const [walnVault] = this.walnVaultPda();
     const [usdcVault] = this.usdcVaultPda();
     const [investorPool] = this.investorPoolPda();
-    const { accounts: hookAccounts, bumps: hookBumps } = await buildHookAccountsWithBumps(
+    const { accounts: hookAccounts } = await buildHookAccountsWithBumps(
       this.program.provider.connection,
       args.seller,
       args.walnMint,
@@ -305,7 +305,7 @@ export class FloorSdk {
       isWritable: a.isWritable,
     }));
     return this.program.methods
-      .sellWaln(args.walnAmount, hookBumps)
+      .sellWaln(args.walnAmount)
       .accounts({
         seller: args.seller,
         contractState,
@@ -334,14 +334,14 @@ export class FloorSdk {
     const [contractState] = this.contractStatePda();
     const [walnVault] = this.walnVaultPda();
     const [roundLockedWaln] = this.roundLockedWalnPda(args.roundIndex);
-    const { accounts: hookAccounts, bumps: hookBumps } = await buildHookAccountsWithBumps(
+    const { accounts: hookAccounts } = await buildHookAccountsWithBumps(
       this.program.provider.connection,
       contractState,
       args.walnMint,
     );
 
     return this.program.methods
-      .claimWaln(args.roundIndex, hookBumps)
+      .claimWaln(args.roundIndex)
       .accounts({
         investor: args.investor,
         contractState,
