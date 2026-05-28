@@ -8,7 +8,7 @@ use anchor_spl::token_2022::Token2022;
 use spl_token_2022::{extension::ExtensionType, state::Mint};
 use spl_token_2022::instruction::AuthorityType;
 use crate::errors::FloorError;
-use crate::seeds::{AAT_NFT_SEED, CONTRACT_STATE_SEED};
+use crate::seeds::{AAT_NFT_SEED, CONTRACT_STATE_SEED, NFT_AUTHORITY_SEED};
 use crate::state::{AatNftAuthority, ProgramState};
 
 #[derive(Accounts)]
@@ -41,7 +41,7 @@ pub struct MintAatNft<'info> {
 
     #[account(
         init_if_needed,
-        seeds = [b"nft_authority"],
+        seeds = [NFT_AUTHORITY_SEED],
         bump,
         space = 8,
         payer = admin,
@@ -154,7 +154,7 @@ pub fn handler(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
     )?;
 
     let nft_authority_bump = ctx.bumps.nft_authority;
-    let nft_signer: &[&[&[u8]]] = &[&[b"nft_authority", &[nft_authority_bump]]];
+    let nft_signer: &[&[&[u8]]] = &[&[NFT_AUTHORITY_SEED, &[nft_authority_bump]]];
 
     msg!("Init metadata {}", ctx.accounts.mint.key());
 
