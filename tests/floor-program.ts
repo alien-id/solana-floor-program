@@ -1064,7 +1064,7 @@ describe("floor-program", () => {
             assert.ok(entry!.usdcDeposited.eq(INVESTOR1_USDC));
         });
 
-        it("allows deposit when contract is paused", async () => {
+        it("rejects deposit when contract is paused", async () => {
             await provider.sendAndConfirm(
                 new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
             );
@@ -1081,20 +1081,12 @@ describe("floor-program", () => {
                     ),
                     [investor1]
                 );
+                assert.fail("should have thrown ContractPaused");
+            } catch (e: any) {
+                assert.include(e.toString(), "ContractPaused");
             } finally {
                 await provider.sendAndConfirm(
                     new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
-                );
-                await provider.sendAndConfirm(
-                    new Transaction().add(
-                        await sdk.withdrawUsdcIx({
-                            investor: investor1.publicKey,
-                            investorUsdcAccount: investor1UsdcAcc,
-                            usdcMint,
-                            amount: new BN(1),
-                        })
-                    ),
-                    [investor1]
                 );
             }
         });
@@ -1168,7 +1160,7 @@ describe("floor-program", () => {
             );
         });
 
-        it("allows withdrawal when contract is paused", async () => {
+        it("rejects withdrawal when contract is paused", async () => {
             await provider.sendAndConfirm(
                 new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
             );
@@ -1184,21 +1176,12 @@ describe("floor-program", () => {
                     ),
                     [investor1]
                 );
+                assert.fail("should have thrown ContractPaused");
+            } catch (e: any) {
+                assert.include(e.toString(), "ContractPaused");
             } finally {
                 await provider.sendAndConfirm(
                     new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
-                );
-                await provider.sendAndConfirm(
-                    new Transaction().add(
-                        await sdk.depositUsdcIx({
-                            investor: investor1.publicKey,
-                            investorUsdcAccount: investor1UsdcAcc,
-                            usdcMint,
-                            aatNft: investor1NftPubkey,
-                            usdcAmount: new BN(1),
-                        })
-                    ),
-                    [investor1]
                 );
             }
         });
@@ -1657,7 +1640,7 @@ describe("floor-program", () => {
             assert.equal(lw!.claimed, true);
         });
 
-        it("allows claim attempt when contract is paused (fails for other reason, not ContractPaused)", async () => {
+        it("rejects claim when contract is paused", async () => {
             await provider.sendAndConfirm(
                 new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
             );
@@ -1674,9 +1657,9 @@ describe("floor-program", () => {
                     ),
                     [investor1]
                 );
-                assert.fail("should have thrown");
+                assert.fail("should have thrown ContractPaused");
             } catch (e: any) {
-                assert.include(e.toString(), "AlreadyClaimed");
+                assert.include(e.toString(), "ContractPaused");
             } finally {
                 await provider.sendAndConfirm(
                     new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
