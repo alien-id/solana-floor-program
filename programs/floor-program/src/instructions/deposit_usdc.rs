@@ -59,6 +59,7 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
     let usdc_mint_key;
     {
         let state = ctx.accounts.contract_state.load()?;
+        require!(state.paused == 0, FloorError::ContractPaused);
         require!(usdc_amount > 0, FloorError::ZeroAmount);
         usdc_mint_key = state.usdc_mint;
         usdc_decimals = ctx.accounts.usdc_mint.decimals;
