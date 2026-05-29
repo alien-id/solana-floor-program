@@ -112,4 +112,8 @@ pub mod floor_program {
     pub fn accept_authority(ctx: Context<AcceptAuthority>) -> Result<()> {
         transfer_authority::accept_authority(ctx)
     }
+
+    pub fn close_round_record(ctx: Context<CloseRoundRecord>, round_index: u64) -> Result<()> {
+        close_round::close_round_record(ctx, round_index)
+    }
 }
