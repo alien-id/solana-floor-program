@@ -92,5 +92,29 @@ pub fn execute_round_start(
             .ok_or(FloorError::ArithmeticOverflow)?;
     }
 
+    let gap_u128 = round_cap_usdc.saturating_sub(total_usdc_locked as u128);
+    if gap_u128 > 0 {
+        let gap = u64::try_from(gap_u128).map_err(|_| FloorError::ArithmeticOverflow)?;
+        for (i, record) in investors.iter_mut().enumerate() {
+            if !eligible[i] {
+                continue;
+            }
+            if record.usdc_deposited >= gap {
+                record.usdc_deposited = record
+                    .usdc_deposited
+                    .checked_sub(gap)
+                    .ok_or(FloorError::ArithmeticOverflow)?;
+                record.usdc_locked_current_round = record
+                    .usdc_locked_current_round
+                    .checked_add(gap)
+                    .ok_or(FloorError::ArithmeticOverflow)?;
+                total_usdc_locked = total_usdc_locked
+                    .checked_add(gap)
+                    .ok_or(FloorError::ArithmeticOverflow)?;
+                break;
+            }
+        }
+    }
+
     Ok((total_aat_volume, total_usdc_locked))
 }
