@@ -52,13 +52,11 @@ pub fn handler(ctx: Context<WithdrawUsdc>, amount: u64) -> Result<()> {
     let state_bump;
     let usdc_decimals;
     let withdraw_amount;
-    let usdc_withdraw_lock_seconds;
     {
         let state = ctx.accounts.contract_state.load()?;
         require!(ctx.accounts.usdc_mint.key() == state.usdc_mint, FloorError::InvalidMint);
         state_bump = state.bump;
         usdc_decimals = ctx.accounts.usdc_mint.decimals;
-        usdc_withdraw_lock_seconds = state.usdc_withdraw_lock_seconds;
     }
 
     {
@@ -71,10 +69,8 @@ pub fn handler(ctx: Context<WithdrawUsdc>, amount: u64) -> Result<()> {
             .find(|r| r.investor == investor_key)
             .ok_or(FloorError::InvalidInvestor)?;
 
-        if usdc_withdraw_lock_seconds > 0 {
-            let now = Clock::get()?.unix_timestamp;
-            require!(now >= record.usdc_unlock_ts, FloorError::UsdcLocked);
-        }
+        let now = Clock::get()?.unix_timestamp;
+        require!(now >= record.usdc_unlock_ts, FloorError::UsdcLocked);
 
         let available = record.usdc_deposited;
         withdraw_amount = if amount == u64::MAX { available } else { amount };
