@@ -87,10 +87,10 @@ pub mod floor_program {
 
     pub fn sell_waln<'info>(
         ctx: Context<'_, '_, 'info, 'info, SellWaln<'info>>,
-        waln_amount: u64,
+        max_waln_amount: u64,
         hook_bumps: [u8; 4],
     ) -> Result<()> {
-        sell_waln::handler(ctx, waln_amount, hook_bumps)
+        sell_waln::handler(ctx, max_waln_amount, hook_bumps)
     }
 
     pub fn claim_waln<'info>(

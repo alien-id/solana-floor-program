@@ -285,7 +285,7 @@ export class FloorSdk {
     sellerUsdcAccount: PublicKey;
     walnMint: PublicKey;
     usdcMint: PublicKey;
-    walnAmount: BN;
+    maxWalnAmount: BN;
     walnTokenProgram?: PublicKey;
     usdcTokenProgram?: PublicKey;
     roundTriggerAccounts?: { pubkey: PublicKey; isWritable: boolean }[];
@@ -305,7 +305,7 @@ export class FloorSdk {
       isWritable: a.isWritable,
     }));
     return this.program.methods
-      .sellWaln(args.walnAmount, hookBumps)
+      .sellWaln(args.maxWalnAmount, hookBumps)
       .accounts({
         seller: args.seller,
         contractState,

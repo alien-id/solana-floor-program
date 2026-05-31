@@ -1469,7 +1469,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: SELL_AMOUNT_PARTIAL,
+                        maxWalnAmount: SELL_AMOUNT_PARTIAL,
                     })
                 ),
                 [seller]
@@ -1524,7 +1524,7 @@ describe("floor-program", () => {
                             walnMint,
                             usdcMint,
                             walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                            walnAmount: new BN(1),
+                            maxWalnAmount: new BN(1),
                         })
                     ),
                     [seller]
@@ -1560,7 +1560,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: SELL_AMOUNT_TRIGGER,
+                        maxWalnAmount: SELL_AMOUNT_TRIGGER,
                         roundTriggerAccounts: [
                             {pubkey: roundRecord0, isWritable: true},
                             {pubkey: roundLockedWaln0, isWritable: true},
@@ -1812,38 +1812,11 @@ describe("floor-program", () => {
             );
         });
 
-        it("rejects a sell that would exceed remaining round capacity", async () => {
-            try {
-                await provider.sendAndConfirm(
-                    new Transaction().add(
-                        await sdk.sellWalnIx({
-                            seller: seller.publicKey,
-                            sellerWalnAccount: sellerWalnAcc,
-                            sellerUsdcAccount: sellerUsdcAcc,
-                            walnMint,
-                            usdcMint,
-                            walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                            walnAmount: new BN(201 * WALN_UNIT),
-                            roundTriggerAccounts: [
-                                {pubkey: sdk.roundRecordPda(new BN(2))[0], isWritable: true},
-                                {pubkey: sdk.roundLockedWalnPda(new BN(2))[0], isWritable: true},
-                            ],
-                        })
-                    ),
-                    [seller]
-                );
-                assert.fail("should have thrown SellAmountExceedsRound");
-            } catch (e: any) {
-                assert.include(e.toString(), "SellAmountExceedsRound");
-            }
-
-            // State must be unchanged
-            const state = await sdk.program.account.programState.fetch(contractState);
-            assert.ok(state.currentRoundWaln.eqn(0));
-            assert.ok(state.roundCount.eqn(1));
-        });
-
         it("partial sell within cap accumulates without triggering", async () => {
+            const before = await sdk.program.account.programState.fetch(contractState);
+            const rc = before.roundCount.toNumber();
+            const wBefore = before.roundStarted === 1 ? before.currentRoundWaln : new BN(0);
+
             await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.sellWalnIx({
@@ -1853,49 +1826,22 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: new BN(100 * WALN_UNIT),
+                        maxWalnAmount: new BN(50 * WALN_UNIT),
                     })
                 ),
                 [seller]
             );
 
-            const state = await sdk.program.account.programState.fetch(contractState);
-            assert.ok(state.currentRoundWaln.eq(new BN(100 * WALN_UNIT)), "100 wALN accumulated");
-            assert.ok(state.roundCount.eqn(1), "round not triggered yet");
+            const after = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(after.currentRoundWaln.eq(wBefore.add(new BN(50 * WALN_UNIT))), "50 wALN accumulated");
+            assert.ok(after.roundCount.eqn(rc), "round not triggered yet");
         });
 
-        it("rejects sell exceeding remaining capacity mid-round", async () => {
-            try {
-                await provider.sendAndConfirm(
-                    new Transaction().add(
-                        await sdk.sellWalnIx({
-                            seller: seller.publicKey,
-                            sellerWalnAccount: sellerWalnAcc,
-                            sellerUsdcAccount: sellerUsdcAcc,
-                            walnMint,
-                            usdcMint,
-                            walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                            walnAmount: new BN(101 * WALN_UNIT),
-                            roundTriggerAccounts: [
-                                {pubkey: sdk.roundRecordPda(new BN(2))[0], isWritable: true},
-                                {pubkey: sdk.roundLockedWalnPda(new BN(2))[0], isWritable: true},
-                            ],
-                        })
-                    ),
-                    [seller]
-                );
-                assert.fail("should have thrown SellAmountExceedsRound");
-            } catch (e: any) {
-                assert.include(e.toString(), "SellAmountExceedsRound");
-            }
-        });
-
-        it("exact remaining capacity triggers round cleanly with current_round_waln=0", async () => {
-            const stateBefore = await sdk.program.account.programState.fetch(contractState);
-            const roundIndex = stateBefore.roundCount; // 2
-            const roundBn = new BN(roundIndex.toNumber());
-            const [roundRecord] = sdk.roundRecordPda(roundBn);
-            const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
+        it("an intervening sell does not brick the completing sell (clamps to the new gap)", async () => {
+            const before = await sdk.program.account.programState.fetch(contractState);
+            const gap = before.roundStarted === 1
+                ? before.currentRoundSizeWaln.sub(before.currentRoundWaln)
+                : before.roundSizeWaln;
 
             await provider.sendAndConfirm(
                 new Transaction().add(
@@ -1906,7 +1852,30 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: new BN(100 * WALN_UNIT),
+                        maxWalnAmount: new BN(1 * WALN_UNIT),
+                    })
+                ),
+                [seller]
+            );
+
+            const mid = await sdk.program.account.programState.fetch(contractState);
+            const roundBn = new BN(mid.roundCount.toNumber());
+            const [roundRecord] = sdk.roundRecordPda(roundBn);
+            const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
+            const newRemaining = mid.currentRoundSizeWaln.sub(mid.currentRoundWaln);
+
+            const wBefore = await getTokenBalance(provider, sellerWalnAcc, TOKEN_2022_PROGRAM_ID);
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                    await sdk.sellWalnIx({
+                        seller: seller.publicKey,
+                        sellerWalnAccount: sellerWalnAcc,
+                        sellerUsdcAccount: sellerUsdcAcc,
+                        walnMint,
+                        usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                        maxWalnAmount: gap,
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
@@ -1915,17 +1884,13 @@ describe("floor-program", () => {
                 ),
                 [seller]
             );
+            const wAfter = await getTokenBalance(provider, sellerWalnAcc, TOKEN_2022_PROGRAM_ID);
 
-            const stateAfter = await sdk.program.account.programState.fetch(contractState);
-            assert.ok(
-                stateAfter.currentRoundWaln.eqn(0),
-                `current_round_waln must be exactly 0 after clean trigger, got ${stateAfter.currentRoundWaln.toString()}`
-            );
-            assert.ok(
-                stateAfter.roundCount.eqn(roundIndex.toNumber() + 1),
-                "round_count should have incremented"
-            );
-            assert.equal(stateAfter.roundStarted, 1, "next round auto-started");
+            assert.equal(wBefore - wAfter, BigInt(newRemaining.toString()), "closer clamped to the shrunk gap, no revert");
+            const after = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(after.roundCount.eqn(mid.roundCount.toNumber() + 1), "round completed despite the race");
+            assert.ok(after.currentRoundWaln.eqn(0), "completing round reset current_round_waln to 0");
+            assert.equal(after.roundStarted, 1, "next round auto-started cleanly");
         });
     });
 
@@ -1990,7 +1955,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: new BN(100 * WALN_UNIT),
+                        maxWalnAmount: new BN(100 * WALN_UNIT),
                     })
                 ),
                 [seller]
@@ -2022,7 +1987,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: new BN(100 * WALN_UNIT),
+                        maxWalnAmount: new BN(100 * WALN_UNIT),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
@@ -2099,35 +2064,15 @@ describe("floor-program", () => {
             assert.equal(state.roundStarted, 1, "round 4 is active");
         });
 
-        it("rejects sell exceeding snapshotted round size (200 wALN) even though live size is 400 wALN", async () => {
-            try {
-                await provider.sendAndConfirm(
-                    new Transaction().add(
-                        await sdk.sellWalnIx({
-                            seller: seller.publicKey,
-                            sellerWalnAccount: sellerWalnAcc,
-                            sellerUsdcAccount: sellerUsdcAcc,
-                            walnMint,
-                            usdcMint,
-                            walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                            walnAmount: new BN(201 * WALN_UNIT),
-                        })
-                    ),
-                    [seller]
-                );
-                assert.fail("should have thrown SellAmountExceedsRound");
-            } catch (e: any) {
-                assert.include(e.toString(), "SellAmountExceedsRound");
-            }
-        });
-
-        it("next round uses new round size (400 wALN) after current round triggers", async () => {
-            const stateBefore = await sdk.program.account.programState.fetch(contractState);
-            const roundIndex = stateBefore.roundCount; // 4
-            const roundBn = new BN(roundIndex.toNumber());
+        it("oversized max clamps to the snapshotted round size (200), not the live 400", async () => {
+            const before = await sdk.program.account.programState.fetch(contractState);
+            const roundBn = new BN(before.roundCount.toNumber());
             const [roundRecord] = sdk.roundRecordPda(roundBn);
             const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
+            const snapshotRemaining = before.currentRoundSizeWaln.sub(before.currentRoundWaln);
+            assert.ok(snapshotRemaining.eq(new BN(200 * WALN_UNIT)), "round is capped at the snapshotted 200");
 
+            const wBefore = await getTokenBalance(provider, sellerWalnAcc, TOKEN_2022_PROGRAM_ID);
             await provider.sendAndConfirm(
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
@@ -2138,7 +2083,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: new BN(200 * WALN_UNIT),
+                        maxWalnAmount: new BN(400 * WALN_UNIT),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
@@ -2147,17 +2092,22 @@ describe("floor-program", () => {
                 ),
                 [seller]
             );
+            const wAfter = await getTokenBalance(provider, sellerWalnAcc, TOKEN_2022_PROGRAM_ID);
 
-            const stateAfter = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(wBefore - wAfter, BigInt(snapshotRemaining.toString()), "clamped to snapshot 200, not the live 400");
+            const after = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(after.roundCount.eqn(before.roundCount.toNumber() + 1), "round completed");
+            assert.ok(after.currentRoundWaln.eqn(0), "completing round reset current_round_waln to 0");
+            assert.equal(after.roundStarted, 1, "next round auto-started cleanly");
+        });
+
+        it("next round uses new round size (400 wALN) after current round triggers", async () => {
+            const state = await sdk.program.account.programState.fetch(contractState);
             assert.ok(
-                stateAfter.roundCount.eqn(roundIndex.toNumber() + 1),
-                "round_count should have incremented"
+                state.currentRoundSizeWaln.eq(new BN(400 * WALN_UNIT)),
+                `auto-started next round must use the updated round size 400 wALN, got ${state.currentRoundSizeWaln.toString()}`
             );
-            assert.ok(
-                stateAfter.currentRoundSizeWaln.eq(new BN(400 * WALN_UNIT)),
-                `new round must use updated round size 400 wALN, got ${stateAfter.currentRoundSizeWaln.toString()}`
-            );
-            assert.equal(stateAfter.roundStarted, 1, "next round auto-started with new round size");
+            assert.equal(state.roundStarted, 1, "next round auto-started with the new round size");
         });
     });
 
@@ -2226,7 +2176,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
+                        maxWalnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
@@ -2278,7 +2228,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
+                        maxWalnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
@@ -2586,7 +2536,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: remainingToSell,
+                        maxWalnAmount: remainingToSell,
                         roundTriggerAccounts: [
                             {pubkey: roundRecordNow, isWritable: true},
                             {pubkey: roundLockedWalnNow, isWritable: true},
@@ -2617,7 +2567,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: roundSizeWaln,
+                        maxWalnAmount: roundSizeWaln,
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},

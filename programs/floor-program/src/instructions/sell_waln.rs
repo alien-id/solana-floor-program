@@ -88,7 +88,7 @@ pub struct SellWaln<'info> {
 
 pub fn handler<'info>(
     ctx: Context<'_, '_, 'info, 'info, SellWaln<'info>>,
-    waln_amount: u64,
+    max_waln_amount: u64,
     hook_bumps: [u8; 4],
 ) -> Result<()> {
     let waln_decimals = ctx.accounts.waln_mint.decimals;
@@ -103,11 +103,12 @@ pub fn handler<'info>(
     let need_round_start;
     let snapshot_price;
     let snapshot_size;
+    let waln_amount;
 
     {
         let state = ctx.accounts.contract_state.load()?;
         require!(state.paused == 0, FloorError::ContractPaused);
-        require!(waln_amount > 0, FloorError::ZeroAmount);
+        require!(max_waln_amount > 0, FloorError::ZeroAmount);
         require!(ctx.accounts.waln_mint.key() == state.waln_mint, FloorError::InvalidMint);
         require!(ctx.accounts.usdc_mint.key() == state.usdc_mint, FloorError::InvalidMint);
 
@@ -128,7 +129,8 @@ pub fn handler<'info>(
         let remaining_in_round = eff_round_size
             .checked_sub(eff_round_waln)
             .ok_or(FloorError::ArithmeticOverflow)?;
-        require!(waln_amount <= remaining_in_round, FloorError::SellAmountExceedsRound);
+        waln_amount = max_waln_amount.min(remaining_in_round);
+        require!(waln_amount > 0, FloorError::ZeroAmount);
 
         floor_price_usdc = eff_floor_price;
         current_round_size_waln = eff_round_size;
