@@ -357,12 +357,11 @@ export class FloorSdk {
 
   /**
    * Decode the RoundLockedWaln account and return the InvestorAlloc for a given investor.
-   * Layout per InvestorAlloc (56 bytes):
+   * Layout per InvestorAlloc (48 bytes):
    *   [0..32]  investor: Pubkey
    *   [32..40] waln_amount: u64 LE
-   *   [40..48] unlock: i64 LE
-   *   [48]     claimed: u8
-   *   [49..56] _pad
+   *   [40]     claimed: u8
+   *   [41..48] _pad
    */
   async fetchInvestorAlloc(roundIndex: BN, investor: PublicKey): Promise<{
     investor: PublicKey;
@@ -375,17 +374,17 @@ export class FloorSdk {
     if (!info) return null;
 
     const buf = Buffer.from(info.data);
-    const count = buf.readUInt32LE(8 + 8);
-    const ALLOC_SIZE = 56;
-    const ALLOC_OFFSET = 8 + 16;
+    const unlock = buf.readBigInt64LE(8 + 8);
+    const count = buf.readUInt32LE(8 + 16);
+    const ALLOC_SIZE = 48;
+    const ALLOC_OFFSET = 8 + 24;
 
     for (let i = 0; i < count; i++) {
       const off = ALLOC_OFFSET + i * ALLOC_SIZE;
       const key = new PublicKey(buf.subarray(off, off + 32));
       if (key.equals(investor)) {
         const walnAmount = buf.readBigUInt64LE(off + 32);
-        const unlock = buf.readBigInt64LE(off + 40);
-        const claimed = buf.readUInt8(off + 48) !== 0;
+        const claimed = buf.readUInt8(off + 40) !== 0;
         return { investor: key, walnAmount, unlock, claimed };
       }
     }

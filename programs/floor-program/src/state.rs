@@ -6,7 +6,6 @@ pub const MAX_INVESTORS: usize = 100;
 pub struct InvestorAlloc {
     pub investor: Pubkey,
     pub waln_amount: u64,
-    pub unlock: i64,
     pub claimed: u8,
     pub _pad: [u8; 7],
 }
@@ -14,6 +13,7 @@ pub struct InvestorAlloc {
 #[account(zero_copy)]
 pub struct RoundLockedWaln {
     pub round_index: u64,
+    pub unlock: i64,
     pub count: u32,
     pub bump: u8,
     pub _pad: [u8; 3],

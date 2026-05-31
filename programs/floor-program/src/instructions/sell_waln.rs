@@ -416,6 +416,7 @@ pub fn handler<'info>(
             let rw: &mut RoundLockedWaln =
                 bytemuck::from_bytes_mut(&mut data[8..]);
             rw.round_index = round_index;
+            rw.unlock = unlock_timestamp;
             rw.count = participant_count;
             rw.bump = round_locked_waln_bump;
             rw._pad = [0; 3];
@@ -423,7 +424,6 @@ pub fn handler<'info>(
                 rw.investors[i] = InvestorAlloc {
                     investor: *investor,
                     waln_amount: *waln_alloc,
-                    unlock: unlock_timestamp,
                     claimed: 0,
                     _pad: [0; 7],
                 };
