@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{program::invoke, system_instruction};
 
 use crate::errors::FloorError;
+use crate::instructions::start_round::require_viable_round_params;
 use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, TREASURY_SEED};
 use crate::state::{InvestorPool, ProgramState};
 
@@ -21,6 +22,7 @@ pub struct AdminOnly<'info> {
 pub fn set_floor_price(ctx: Context<AdminOnly>, new_price_usdc: u64) -> Result<()> {
     require!(new_price_usdc > 0, FloorError::InvalidParameter);
     let mut state = ctx.accounts.contract_state.load_mut()?;
+    require_viable_round_params(state.round_size_waln, new_price_usdc, state.waln_decimals)?;
     state.floor_price_usdc = new_price_usdc;
     Ok(())
 }
@@ -28,6 +30,7 @@ pub fn set_floor_price(ctx: Context<AdminOnly>, new_price_usdc: u64) -> Result<(
 pub fn set_round_size(ctx: Context<AdminOnly>, new_round_size_waln: u64) -> Result<()> {
     require!(new_round_size_waln > 0, FloorError::InvalidParameter);
     let mut state = ctx.accounts.contract_state.load_mut()?;
+    require_viable_round_params(new_round_size_waln, state.floor_price_usdc, state.waln_decimals)?;
     state.round_size_waln = new_round_size_waln;
     Ok(())
 }

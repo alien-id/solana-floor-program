@@ -763,10 +763,10 @@ describe("floor-program", () => {
 
         it("set_round_size updates round size", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setRoundSize(new BN(200)))
+                new Transaction().add(await sdk.admin(admin.publicKey).setRoundSize(new BN(100_000)))
             );
             let state = await sdk.program.account.programState.fetch(contractState);
-            assert.ok(state.roundSizeWaln.eqn(200));
+            assert.ok(state.roundSizeWaln.eqn(100_000));
 
             // restore
             await provider.sendAndConfirm(
@@ -838,6 +838,17 @@ describe("floor-program", () => {
             try {
                 await provider.sendAndConfirm(
                     new Transaction().add(await sdk.admin(admin.publicKey).setRoundSize(new BN(0)))
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.include(e.toString(), "InvalidParameter");
+            }
+        });
+
+        it("set_round_size rejects a sub-scale round_size * floor_price", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(await sdk.admin(admin.publicKey).setRoundSize(new BN(9_999)))
                 );
                 assert.fail("should have thrown");
             } catch (e: any) {
