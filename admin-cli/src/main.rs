@@ -1,7 +1,7 @@
 use admin_cli::handlers::{
     handle_accept_authority, handle_cancel_round, handle_fund_treasury, handle_info,
     handle_initialize, handle_mint_aat_nft, handle_set_floor_price, handle_set_investor_usdc_unlock,
-    handle_set_lock_period, handle_set_paused, handle_set_round_size, handle_set_usdc_withdraw_lock,
+    handle_set_lock_period, handle_set_round_size, handle_set_sell_paused, handle_set_usdc_withdraw_lock,
     handle_transfer_authority,
 };
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
@@ -68,7 +68,7 @@ enum Commands {
         investor: String,
         new_unlock_ts: i64,
     },
-    SetPaused {
+    SetSellPaused {
         #[arg(long, action = clap::ArgAction::Set)]
         paused: bool,
     },
@@ -186,7 +186,7 @@ fn main() -> Result<()> {
                 .map_err(|e| anyhow!("Invalid investor pubkey: {}", e))?;
             handle_set_investor_usdc_unlock(&program, investor, new_unlock_ts)?
         }
-        Commands::SetPaused { paused } => handle_set_paused(&program, paused)?,
+        Commands::SetSellPaused { paused } => handle_set_sell_paused(&program, paused)?,
         Commands::CancelRound => handle_cancel_round(&program)?,
         Commands::FundTreasury { amount_lamports } => {
             handle_fund_treasury(&program, amount_lamports)?

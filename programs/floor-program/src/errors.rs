@@ -2,8 +2,8 @@ use anchor_lang::prelude::*;
 
 #[error_code]
 pub enum FloorError {
-    #[msg("Contract is paused")]
-    ContractPaused,
+    #[msg("Selling is paused")]
+    SellPaused,
     #[msg("Sell amount exceeds remaining round capacity; split into smaller sells")]
     SellAmountExceedsRound,
     #[msg("Amount must be greater than zero")]

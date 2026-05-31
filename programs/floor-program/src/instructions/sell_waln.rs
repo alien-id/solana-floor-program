@@ -106,7 +106,7 @@ pub fn handler<'info>(
 
     {
         let state = ctx.accounts.contract_state.load()?;
-        require!(state.paused == 0, FloorError::ContractPaused);
+        require!(state.sell_paused == 0, FloorError::SellPaused);
         require!(waln_amount > 0, FloorError::ZeroAmount);
         require!(ctx.accounts.waln_mint.key() == state.waln_mint, FloorError::InvalidMint);
         require!(ctx.accounts.usdc_mint.key() == state.usdc_mint, FloorError::InvalidMint);

@@ -80,9 +80,9 @@ pub fn set_investor_usdc_unlock(
     Ok(())
 }
 
-pub fn set_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
+pub fn set_sell_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
     let mut state = ctx.accounts.contract_state.load_mut()?;
-    state.paused = if paused { 1 } else { 0 };
+    state.sell_paused = if paused { 1 } else { 0 };
     Ok(())
 }
 

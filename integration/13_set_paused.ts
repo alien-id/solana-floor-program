@@ -18,12 +18,12 @@ async function main() {
   const provider = createProviderWithPayer(envProvider, payer);
   const sdk = createSdk(provider);
 
-  const ix = await sdk.admin(payer.publicKey).setPaused(paused);
+  const ix = await sdk.admin(payer.publicKey).setSellPaused(paused);
 
   const tx = new Transaction().add(ix);
   const sig = await provider.sendAndConfirm(tx, [payer]);
-  console.log("set_paused tx:", sig);
-  console.log("Contract paused:", paused);
+  console.log("set_sell_paused tx:", sig);
+  console.log("Sell paused:", paused);
 }
 
 main().catch((err) => {

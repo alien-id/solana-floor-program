@@ -40,7 +40,7 @@ pub struct ProgramState {
     pub waln_dust_carryover: u64,
     pub total_usdc_locked_for_round: u64,
     pub pending_admin: Pubkey,
-    pub paused: u8,
+    pub sell_paused: u8,
     pub round_started: u8,
     pub bump: u8,
     pub usdc_vault_bump: u8,
