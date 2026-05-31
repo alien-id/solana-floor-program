@@ -77,7 +77,7 @@ pub mod floor_program {
         admin::fund_treasury(ctx, amount)
     }
 
-    pub fn withdraw_treasury(ctx: Context<FundTreasury>, amount: u64) -> Result<()> {
+    pub fn withdraw_treasury(ctx: Context<WithdrawTreasury>, amount: u64) -> Result<()> {
         admin::withdraw_treasury(ctx, amount)
     }
 

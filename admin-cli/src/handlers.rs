@@ -354,7 +354,7 @@ pub fn handle_withdraw_treasury(
 
     let tx = program
         .request()
-        .accounts(floor_program::accounts::FundTreasury {
+        .accounts(floor_program::accounts::WithdrawTreasury {
             admin: program.payer(),
             contract_state,
             treasury,
