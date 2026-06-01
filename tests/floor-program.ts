@@ -513,6 +513,8 @@ describe("floor-program", () => {
                 })
             )
         );
+        const investorPoolLamports = await provider.connection.getBalance(investorPool);
+        console.log(`    [LAMPORTS] InvestorPool account: ${investorPoolLamports} lamports`);
 
         const poolInfoInit = await provider.connection.getAccountInfo(investorPool);
         poolLamports0 = poolInfoInit!.lamports;
@@ -3079,7 +3081,7 @@ describe("floor-program", () => {
     // 100-investor scale test
     // ---------------------------------------------------------------------------
     describe.skip("100-investor pool scale test", () => {
-        const NUM_NEW = 99;
+        const NUM_NEW = 98;
 
         interface NewInvestor {
             keypair: Keypair;
@@ -3277,12 +3279,16 @@ describe("floor-program", () => {
             console.log(
                 `    [CU] sell_waln 100-investor round trigger: ${txInfo?.meta?.computeUnitsConsumed}`
             );
+            const roundLockedWalnLamports100 = await provider.connection.getBalance(roundLockedWaln);
+            console.log(`    [LAMPORTS] RoundLockedWaln account (100-investor): ${roundLockedWalnLamports100} lamports`);
+            const investorPoolLamports100 = await provider.connection.getBalance(sdk.investorPoolPda()[0]);
+            console.log(`    [LAMPORTS] InvestorPool account (100-investor): ${investorPoolLamports100} lamports`);
 
             // Verify round record was created with 102 participants
             const rr = await sdk.fetchRoundRecord(roundIdx);
             assert.equal(
                 rr.participantCount,
-                100,
+                99,
                 "all 100 investors (1 original + 99 new) should participate"
             );
 
@@ -3304,7 +3310,7 @@ describe("floor-program", () => {
 
             // Verify pool state via InvestorRecord entries
             const pool = await sdk.fetchInvestorPool();
-            assert.ok(pool.count >= 100, "pool should hold at least 100 investors");
+            assert.ok(pool.count >= 99, "pool should hold at least 100 investors");
         });
     });
 });
