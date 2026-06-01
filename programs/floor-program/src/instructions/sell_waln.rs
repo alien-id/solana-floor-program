@@ -414,7 +414,7 @@ pub fn handler<'info>(
 
         {
             let mut data = round_locked_waln_info.try_borrow_mut_data()?;
-            data[..8].copy_from_slice(&RoundLockedWaln::DISCRIMINATOR);
+            data[..8].copy_from_slice(RoundLockedWaln::DISCRIMINATOR);
             let rw: &mut RoundLockedWaln =
                 bytemuck::from_bytes_mut(&mut data[8..]);
             rw.round_index = round_index;
@@ -477,7 +477,7 @@ pub fn handler<'info>(
 
         {
             let mut rr_data = round_record_info.try_borrow_mut_data()?;
-            rr_data[..8].copy_from_slice(&RoundRecord::DISCRIMINATOR);
+            rr_data[..8].copy_from_slice(RoundRecord::DISCRIMINATOR);
             let record = RoundRecord {
                 round_index,
                 triggered_at: clock.unix_timestamp,
