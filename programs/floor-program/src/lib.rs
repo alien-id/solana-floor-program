@@ -69,6 +69,10 @@ pub mod floor_program {
         admin::set_sell_paused(ctx, paused)
     }
 
+    pub fn set_frozen(ctx: Context<AdminOnly>, frozen: bool) -> Result<()> {
+        admin::set_frozen(ctx, frozen)
+    }
+
     pub fn cancel_round(ctx: Context<CancelRound>) -> Result<()> {
         admin::cancel_round(ctx)
     }

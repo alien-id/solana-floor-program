@@ -86,6 +86,12 @@ pub fn set_sell_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
     Ok(())
 }
 
+pub fn set_frozen(ctx: Context<AdminOnly>, frozen: bool) -> Result<()> {
+    let mut state = ctx.accounts.contract_state.load_mut()?;
+    state.frozen = if frozen { 1 } else { 0 };
+    Ok(())
+}
+
 #[derive(Accounts)]
 pub struct FundTreasury<'info> {
     #[account(mut)]

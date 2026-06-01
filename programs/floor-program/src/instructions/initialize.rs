@@ -83,6 +83,7 @@ pub fn handler(
     state.total_usdc_in_lobby = 0;
     state.round_count = 0;
     state.sell_paused = 0;
+    state.frozen = 0;
     state.round_started = 0;
     state.bump = ctx.bumps.contract_state;
     state.usdc_vault_bump = ctx.bumps.usdc_vault;

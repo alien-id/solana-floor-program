@@ -59,6 +59,7 @@ pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _rou
     let waln_mint_key;
     {
         let state = ctx.accounts.contract_state.load()?;
+        require!(state.frozen == 0, FloorError::ContractFrozen);
         state_bump = state.bump;
         waln_mint_key = state.waln_mint;
     }

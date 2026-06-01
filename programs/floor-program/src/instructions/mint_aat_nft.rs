@@ -59,6 +59,7 @@ pub fn handler(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
     require!(aat_volume > 0, FloorError::InvalidParameter);
     {
         let mut state = ctx.accounts.contract_state.load_mut()?;
+        require!(state.frozen == 0, FloorError::ContractFrozen);
         let new_total = state.total_aat_volume
             .checked_add(aat_volume)
             .ok_or(FloorError::ArithmeticOverflow)?;

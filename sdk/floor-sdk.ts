@@ -414,6 +414,8 @@ export class FloorSdk {
         } as any).instruction(),
       setSellPaused: (paused: boolean): Promise<TransactionInstruction> =>
         this.program.methods.setSellPaused(paused).accounts(accounts as any).instruction(),
+      setFrozen: (frozen: boolean): Promise<TransactionInstruction> =>
+        this.program.methods.setFrozen(frozen).accounts(accounts as any).instruction(),
       fundTreasury: (amount: BN): Promise<TransactionInstruction> =>
         this.program.methods.fundTreasury(amount).accounts(accounts as any).instruction(),
       cancelRound: (): Promise<TransactionInstruction> =>

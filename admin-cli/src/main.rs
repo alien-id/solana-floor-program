@@ -1,7 +1,8 @@
 use admin_cli::handlers::{
     handle_accept_authority, handle_cancel_round, handle_fund_treasury, handle_info,
     handle_initialize, handle_mint_aat_nft, handle_set_floor_price, handle_set_investor_usdc_unlock,
-    handle_set_lock_period, handle_set_round_size, handle_set_sell_paused, handle_set_usdc_withdraw_lock,
+    handle_set_frozen, handle_set_lock_period, handle_set_round_size, handle_set_sell_paused,
+    handle_set_usdc_withdraw_lock,
     handle_transfer_authority,
 };
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
@@ -71,6 +72,10 @@ enum Commands {
     SetSellPaused {
         #[arg(long, action = clap::ArgAction::Set)]
         paused: bool,
+    },
+    SetFrozen {
+        #[arg(long, action = clap::ArgAction::Set)]
+        frozen: bool,
     },
     CancelRound,
     FundTreasury {
@@ -187,6 +192,7 @@ fn main() -> Result<()> {
             handle_set_investor_usdc_unlock(&program, investor, new_unlock_ts)?
         }
         Commands::SetSellPaused { paused } => handle_set_sell_paused(&program, paused)?,
+        Commands::SetFrozen { frozen } => handle_set_frozen(&program, frozen)?,
         Commands::CancelRound => handle_cancel_round(&program)?,
         Commands::FundTreasury { amount_lamports } => {
             handle_fund_treasury(&program, amount_lamports)?

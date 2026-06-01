@@ -801,6 +801,20 @@ describe("floor-program", () => {
             assert.equal(state.sellPaused, 0);
         });
 
+        it("set_frozen freezes and unfreezes", async () => {
+            await provider.sendAndConfirm(
+                new Transaction().add(await sdk.admin(admin.publicKey).setFrozen(true))
+            );
+            let state = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(state.frozen, 1);
+
+            await provider.sendAndConfirm(
+                new Transaction().add(await sdk.admin(admin.publicKey).setFrozen(false))
+            );
+            state = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(state.frozen, 0);
+        });
+
         it("fund treasury by admin", async () => {
             await provider.sendAndConfirm(
                 new Transaction().add(

@@ -103,6 +103,7 @@ pub fn handle_info(program: &Program<Arc<Keypair>>) -> Result<()> {
     println!("Lock Period:    {} seconds", state.lock_period_seconds);
     println!("USDC Withdraw Lock: {} seconds", state.usdc_withdraw_lock_seconds);
     println!("Sell Paused:    {}", state.sell_paused == 1);
+    println!("Frozen:         {}", state.frozen == 1);
 
     println!("\n--- Round Status ---");
     println!("Round Started:  {}", state.round_started == 1);
@@ -283,6 +284,25 @@ pub fn handle_set_sell_paused(program: &Program<Arc<Keypair>>, paused: bool) -> 
             contract_state,
         })
         .args(floor_program::instruction::SetSellPaused { paused })
+        .send()?;
+
+    println!("Transaction successful: {}", tx);
+    Ok(())
+}
+
+pub fn handle_set_frozen(program: &Program<Arc<Keypair>>, frozen: bool) -> Result<()> {
+    let program_id = program.id();
+    let (contract_state, _) = get_contract_state_address(&program_id);
+
+    println!("Setting frozen to: {}", frozen);
+
+    let tx = program
+        .request()
+        .accounts(floor_program::accounts::AdminOnly {
+            admin: program.payer(),
+            contract_state,
+        })
+        .args(floor_program::instruction::SetFrozen { frozen })
         .send()?;
 
     println!("Transaction successful: {}", tx);

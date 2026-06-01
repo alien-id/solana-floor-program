@@ -47,7 +47,7 @@ pub struct ProgramState {
     pub waln_vault_bump: u8,
     pub waln_decimals: u8,
     pub usdc_decimals: u8,
-    pub _padding: [u8; 1],
+    pub frozen: u8,
 }
 
 
