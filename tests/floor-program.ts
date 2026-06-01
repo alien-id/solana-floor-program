@@ -45,6 +45,8 @@ const WALN_UNIT = 10 ** WALN_DECIMALS;
 
 const FLOOR_PRICE = new BN(100_000);
 const ROUND_SIZE = new BN(200 * WALN_UNIT);
+// Must mirror MIN_SELL_WALN in programs/floor-program/src/state.rs (1 wALN).
+const MIN_SELL_WALN = new BN(1_000_000_000);
 const LOCK_PERIOD = new BN(0);
 const CONFIRM_OPTIONS = {
     commitment: "confirmed" as const,
@@ -762,16 +764,33 @@ describe("floor-program", () => {
         });
 
         it("set_round_size updates round size", async () => {
+            const newSize = new BN(250 * WALN_UNIT);
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setRoundSize(new BN(200)))
+                new Transaction().add(await sdk.admin(admin.publicKey).setRoundSize(newSize))
             );
             let state = await sdk.program.account.programState.fetch(contractState);
-            assert.ok(state.roundSizeWaln.eqn(200));
+            assert.ok(state.roundSizeWaln.eq(newSize));
 
             // restore
             await provider.sendAndConfirm(
                 new Transaction().add(await sdk.admin(admin.publicKey).setRoundSize(ROUND_SIZE))
             );
+        });
+
+        it("set_round_size rejects values below MIN_SELL_WALN", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(admin.publicKey).setRoundSize(MIN_SELL_WALN.subn(1))
+                    )
+                );
+                assert.fail("should have rejected round size below MIN_SELL_WALN");
+            } catch (e: any) {
+                assert.include(e.toString(), "InvalidParameter");
+            }
+            // unchanged
+            const state = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(state.roundSizeWaln.eq(ROUND_SIZE));
         });
 
         it("set_lock_period updates lock period", async () => {
@@ -1622,6 +1641,85 @@ describe("floor-program", () => {
             assert.ok(entry1!.walnPurchasedTotal.eq(new BN("133333330000")));
             assert.ok(entry2!.usdcCommitted.eq(new BN(6_666_666)));
             assert.ok(entry2!.walnPurchasedTotal.eq(new BN("66666660000")));
+        });
+    });
+
+    // ---------------------------------------------------------------------------
+    // 6b. cancel_round dust-DoS guard (issue #25)
+    // ---------------------------------------------------------------------------
+    describe("sell_waln min-sell guard (issue #25)", () => {
+        // After the round-trigger above, round N+1 is auto-started with
+        // current_round_waln == 0 — exactly the window in which cancel_round is
+        // callable. The issue showed a dust sell (>= dust floor) permanently
+        // closed that window. The min-sell guard must now reject it.
+        it("dust sell cannot close the cancel_round window", async () => {
+            const before = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(before.roundStarted, 1, "expected an auto-started round");
+            assert.ok(
+                before.currentRoundWaln.isZero(),
+                "expected the cancel_round window (current_round_waln == 0)"
+            );
+
+            // dust floor = ceil(waln_scale / floor_price) = ceil(1e9 / 1e5) = 10_000.
+            // usdc_out = 10_000 * 100_000 / 1e9 = 1 > 0, so the old code accepted it.
+            const dust = new BN(10_000);
+            assert.ok(dust.lt(MIN_SELL_WALN), "dust must be below the minimum");
+
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.sellWalnIx({
+                            seller: seller.publicKey,
+                            sellerWalnAccount: sellerWalnAcc,
+                            sellerUsdcAccount: sellerUsdcAcc,
+                            walnMint,
+                            usdcMint,
+                            walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                            walnAmount: dust,
+                        })
+                    ),
+                    [seller]
+                );
+                assert.fail("dust sell should have been rejected");
+            } catch (e: any) {
+                assert.include(e.toString(), "SellAmountTooSmall");
+            }
+
+            // The window must be untouched, so cancel_round is still usable.
+            const after = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(after.roundStarted, 1, "round must remain started");
+            assert.ok(
+                after.currentRoundWaln.isZero(),
+                "current_round_waln must still be 0 — cancel_round window preserved"
+            );
+        });
+
+        it("a sub-minimum sell just below MIN_SELL_WALN is rejected", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.sellWalnIx({
+                            seller: seller.publicKey,
+                            sellerWalnAccount: sellerWalnAcc,
+                            sellerUsdcAccount: sellerUsdcAcc,
+                            walnMint,
+                            usdcMint,
+                            walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                            walnAmount: MIN_SELL_WALN.subn(1),
+                        })
+                    ),
+                    [seller]
+                );
+                assert.fail("sell below MIN_SELL_WALN should have been rejected");
+            } catch (e: any) {
+                assert.include(e.toString(), "SellAmountTooSmall");
+            }
+
+            const after = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(
+                after.currentRoundWaln.isZero(),
+                "current_round_waln must still be 0"
+            );
         });
     });
 

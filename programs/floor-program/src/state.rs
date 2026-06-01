@@ -2,6 +2,8 @@ use anchor_lang::prelude::*;
 
 pub const MAX_INVESTORS: usize = 100;
 
+pub const MIN_SELL_WALN: u64 = 1_000_000_000;
+
 #[zero_copy]
 pub struct InvestorAlloc {
     pub investor: Pubkey,

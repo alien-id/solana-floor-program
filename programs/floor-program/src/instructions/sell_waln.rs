@@ -12,7 +12,7 @@ use crate::seeds::{
     CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, ROUND_LOCKED_WALN_SEED, ROUND_RECORD_SEED,
     TREASURY_SEED, USDC_VAULT_SEED, WALN_VAULT_SEED,
 };
-use crate::state::{InvestorAlloc, InvestorPool, ProgramState, RoundLockedWaln, RoundRecord};
+use crate::state::{InvestorAlloc, InvestorPool, ProgramState, RoundLockedWaln, RoundRecord, MIN_SELL_WALN};
 
 #[derive(Accounts)]
 pub struct SellWaln<'info> {
@@ -129,6 +129,14 @@ pub fn handler<'info>(
             .checked_sub(eff_round_waln)
             .ok_or(FloorError::ArithmeticOverflow)?;
         require!(waln_amount <= remaining_in_round, FloorError::SellAmountExceedsRound);
+
+        if eff_round_waln == 0 {
+            let is_completing = waln_amount == remaining_in_round;
+            require!(
+                waln_amount >= MIN_SELL_WALN || is_completing,
+                FloorError::SellAmountTooSmall
+            );
+        }
 
         floor_price_usdc = eff_floor_price;
         current_round_size_waln = eff_round_size;

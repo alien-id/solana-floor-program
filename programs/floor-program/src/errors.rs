@@ -52,4 +52,6 @@ pub enum FloorError {
     NoPendingAdmin,
     #[msg("USDC is still locked — withdrawal is not allowed before the unlock timestamp")]
     UsdcLocked,
+    #[msg("Sell amount is below the configured minimum for this round")]
+    SellAmountTooSmall,
 }
