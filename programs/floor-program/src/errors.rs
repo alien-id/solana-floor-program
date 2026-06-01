@@ -52,4 +52,6 @@ pub enum FloorError {
     NoPendingAdmin,
     #[msg("USDC is still locked — withdrawal is not allowed before the unlock timestamp")]
     UsdcLocked,
+    #[msg("Investor is not inactive — clear aat_volume, deposits, and locked funds before removal")]
+    InvestorNotInactive,
 }

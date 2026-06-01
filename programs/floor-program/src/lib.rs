@@ -73,6 +73,13 @@ pub mod floor_program {
         admin::cancel_round(ctx)
     }
 
+    pub fn remove_investor_from_pool(
+        ctx: Context<RemoveInvestorFromPool>,
+        investor: Pubkey,
+    ) -> Result<()> {
+        admin::remove_investor_from_pool(ctx, investor)
+    }
+
     pub fn fund_treasury(ctx: Context<FundTreasury>, amount: u64) -> Result<()> {
         admin::fund_treasury(ctx, amount)
     }
@@ -103,6 +110,10 @@ pub mod floor_program {
 
     pub fn mint_aat_nft(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
         mint_aat_nft::handler(ctx, aat_volume)
+    }
+
+    pub fn update_aat_volume(ctx: Context<UpdateAatVolume>, new_volume: u64) -> Result<()> {
+        update_aat_volume::handler(ctx, new_volume)
     }
 
     pub fn transfer_authority(ctx: Context<TransferAuthority>) -> Result<()> {

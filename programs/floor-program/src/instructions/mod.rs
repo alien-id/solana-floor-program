@@ -7,6 +7,7 @@ pub mod mint_aat_nft;
 pub mod sell_waln;
 pub mod start_round;
 pub mod transfer_authority;
+pub mod update_aat_volume;
 pub mod withdraw_usdc;
 
 pub use admin::*;
@@ -16,4 +17,5 @@ pub use initialize::*;
 pub use mint_aat_nft::*;
 pub use sell_waln::*;
 pub use transfer_authority::*;
+pub use update_aat_volume::*;
 pub use withdraw_usdc::*;

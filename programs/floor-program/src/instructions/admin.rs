@@ -3,7 +3,7 @@ use anchor_lang::solana_program::{program::invoke, system_instruction};
 
 use crate::errors::FloorError;
 use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, TREASURY_SEED};
-use crate::state::{InvestorPool, ProgramState};
+use crate::state::{InvestorPool, InvestorRecord, ProgramState};
 
 #[derive(Accounts)]
 pub struct AdminOnly<'info> {
@@ -151,6 +151,64 @@ pub fn cancel_round(ctx: Context<CancelRound>) -> Result<()> {
             .ok_or(FloorError::ArithmeticOverflow)?;
         record.usdc_locked_current_round = 0;
     }
+
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct RemoveInvestorFromPool<'info> {
+    pub admin: Signer<'info>,
+
+    #[account(
+        seeds = [CONTRACT_STATE_SEED],
+        bump,
+        constraint = contract_state.load()?.admin == admin.key() @ FloorError::Unauthorized,
+    )]
+    pub contract_state: AccountLoader<'info, ProgramState>,
+
+    #[account(
+        mut,
+        seeds = [INVESTOR_POOL_SEED],
+        bump,
+    )]
+    pub investor_pool: AccountLoader<'info, InvestorPool>,
+}
+
+pub fn remove_investor_from_pool(
+    ctx: Context<RemoveInvestorFromPool>,
+    investor: Pubkey,
+) -> Result<()> {
+    let mut pool = ctx.accounts.investor_pool.load_mut()?;
+    let count = pool.count as usize;
+
+    let idx = pool.investors[..count]
+        .iter()
+        .position(|r| r.investor == investor)
+        .ok_or(FloorError::InvalidInvestor)?;
+
+    {
+        let record = &pool.investors[idx];
+        require!(
+            record.aat_volume == 0
+                && record.usdc_deposited == 0
+                && record.usdc_locked_current_round == 0,
+            FloorError::InvestorNotInactive
+        );
+    }
+
+    let last = count - 1;
+    let moved = pool.investors[last];
+    pool.investors[idx] = moved;
+    pool.investors[last] = InvestorRecord {
+        investor: Pubkey::default(),
+        usdc_deposited: 0,
+        usdc_locked_current_round: 0,
+        usdc_committed: 0,
+        waln_purchased_total: 0,
+        aat_volume: 0,
+        usdc_unlock_ts: 0,
+    };
+    pool.count -= 1;
 
     Ok(())
 }

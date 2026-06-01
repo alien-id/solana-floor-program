@@ -1,8 +1,9 @@
 use admin_cli::handlers::{
     handle_accept_authority, handle_cancel_round, handle_fund_treasury, handle_info,
-    handle_initialize, handle_mint_aat_nft, handle_set_floor_price, handle_set_investor_usdc_unlock,
-    handle_set_lock_period, handle_set_paused, handle_set_round_size, handle_set_usdc_withdraw_lock,
-    handle_transfer_authority,
+    handle_initialize, handle_mint_aat_nft, handle_remove_investor_from_pool, handle_set_floor_price,
+    handle_set_investor_usdc_unlock, handle_set_lock_period, handle_set_paused,
+    handle_set_round_size, handle_set_usdc_withdraw_lock, handle_transfer_authority,
+    handle_update_aat_volume,
 };
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
 use anchor_client::solana_sdk::pubkey::Pubkey;
@@ -79,6 +80,13 @@ enum Commands {
     MintAatNft {
         investor: String,
         aat_volume: u64,
+    },
+    UpdateAatVolume {
+        investor: String,
+        new_volume: u64,
+    },
+    RemoveInvestorFromPool {
+        investor: String,
     },
     TransferAuthority {
         new_admin: String,
@@ -199,6 +207,21 @@ fn main() -> Result<()> {
                 .parse::<Pubkey>()
                 .map_err(|e| anyhow!("Invalid investor pubkey: {}", e))?;
             handle_mint_aat_nft(&program, investor, aat_volume)?
+        }
+        Commands::UpdateAatVolume {
+            investor,
+            new_volume,
+        } => {
+            let investor = investor
+                .parse::<Pubkey>()
+                .map_err(|e| anyhow!("Invalid investor pubkey: {}", e))?;
+            handle_update_aat_volume(&program, investor, new_volume)?
+        }
+        Commands::RemoveInvestorFromPool { investor } => {
+            let investor = investor
+                .parse::<Pubkey>()
+                .map_err(|e| anyhow!("Invalid investor pubkey: {}", e))?;
+            handle_remove_investor_from_pool(&program, investor)?
         }
         Commands::TransferAuthority { new_admin } => {
             let new_admin = new_admin
