@@ -2468,6 +2468,238 @@ describe("floor-program", () => {
     });
 
     // ---------------------------------------------------------------------------
+    // 16. close_round — settle a partially-filled round; next round starts on sell
+    // ---------------------------------------------------------------------------
+    describe("close_round", () => {
+        // round index that gets force-settled by close_round (set in the main test)
+        let closedRoundIdx: BN;
+
+        before(async () => {
+            // Reset floor price / round size to the canonical values.
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.admin(admin.publicKey).setFloorPrice(FLOOR_PRICE)
+                )
+            );
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.admin(admin.publicKey).setRoundSize(ROUND_SIZE)
+                )
+            );
+
+            // Make sure no round is left active from earlier blocks.
+            const pre = await sdk.program.account.programState.fetch(contractState);
+            if (pre.roundStarted === 1 && pre.currentRoundWaln.isZero()) {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(admin.publicKey).cancelRound()
+                    )
+                );
+            }
+
+            // Fund seller wALN (covers the partial sell here + the restart sell).
+            await mintTokensTo(provider, walnMint, sellerWalnAcc, BigInt(300 * WALN_UNIT), TOKEN_2022_PROGRAM_ID);
+
+            // Fresh deposits so both investors are eligible for round-start.
+            await mintTokensTo(provider, usdcMint, investor1UsdcAcc, BigInt(5_000 * USDC_UNIT));
+            await mintTokensTo(provider, usdcMint, investor2UsdcAcc, BigInt(5_000 * USDC_UNIT));
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.depositUsdcIx({
+                        investor: investor1.publicKey,
+                        investorUsdcAccount: investor1UsdcAcc,
+                        usdcMint,
+                        aatNft: investor1NftPubkey,
+                        usdcAmount: new BN(5_000 * USDC_UNIT),
+                    })
+                ),
+                [investor1]
+            );
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.depositUsdcIx({
+                        investor: investor2.publicKey,
+                        investorUsdcAccount: investor2UsdcAcc,
+                        usdcMint,
+                        aatNft: investor2NftPubkey,
+                        usdcAmount: new BN(5_000 * USDC_UNIT),
+                    })
+                ),
+                [investor2]
+            );
+
+            // Partial sell (100 of 200 wALN): auto-starts the round, locks investor
+            // USDC, but does NOT fill the round — so it never auto-settles.
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.sellWalnIx({
+                        seller: seller.publicKey,
+                        sellerWalnAccount: sellerWalnAcc,
+                        sellerUsdcAccount: sellerUsdcAcc,
+                        walnMint,
+                        usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                        walnAmount: SELL_AMOUNT_PARTIAL,
+                    })
+                ),
+                [seller]
+            );
+
+            const state = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(state.roundStarted, 1, "setup: round must be active");
+            assert.ok(
+                state.currentRoundWaln.eq(SELL_AMOUNT_PARTIAL),
+                "setup: round must be partially filled"
+            );
+            assert.ok(
+                state.currentRoundWaln.lt(state.currentRoundSizeWaln),
+                "setup: round must NOT be full"
+            );
+        });
+
+        it("non-admin cannot close a round", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(investor1.publicKey).closeRound()
+                    ),
+                    [investor1]
+                );
+                assert.fail("should have rejected non-admin close");
+            } catch (e: any) {
+                assert.ok(
+                    e.message.includes("Unauthorized") || e.logs?.some((l: string) => l.includes("Unauthorized")),
+                    "expected Unauthorized error"
+                );
+            }
+        });
+
+        it("admin closes a partially-filled round: pro-rata wALN + USDC refund, no auto-restart", async () => {
+            const stateBefore = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(stateBefore.roundStarted, 1, "round must be active before close");
+
+            closedRoundIdx = new BN(stateBefore.roundCount.toString());
+            const floorPrice = BigInt(stateBefore.currentRoundFloorPrice.toString());
+            const walnScale = BigInt(WALN_UNIT);
+            const walnInRoundBefore = BigInt(stateBefore.currentRoundWaln.toString());
+            const dustBefore = BigInt(stateBefore.walnDustCarryover.toString());
+
+            const e1Before = await sdk.fetchInvestorRecord(investor1.publicKey);
+            const e2Before = await sdk.fetchInvestorRecord(investor2.publicKey);
+            const locked1 = BigInt(e1Before!.usdcLockedCurrentRound.toString());
+            const locked2 = BigInt(e2Before!.usdcLockedCurrentRound.toString());
+            const deposited1Before = BigInt(e1Before!.usdcDeposited.toString());
+            const deposited2Before = BigInt(e2Before!.usdcDeposited.toString());
+            const purchased1Before = BigInt(e1Before!.walnPurchasedTotal.toString());
+            const purchased2Before = BigInt(e2Before!.walnPurchasedTotal.toString());
+            assert.ok(locked1 > 0n && locked2 > 0n, "both investors should have locked funds");
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                    await sdk.admin(admin.publicKey).closeRound()
+                )
+            );
+
+            // --- State finalized, NO new round started. ---
+            const stateAfter = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(stateAfter.roundStarted, 0, "round_started must be 0 (no auto-restart)");
+            assert.equal(stateAfter.currentRoundWaln.toNumber(), 0, "current_round_waln must be 0");
+            assert.equal(stateAfter.totalUsdcLockedForRound.toNumber(), 0, "locked-for-round must be 0");
+            assert.ok(
+                new BN(stateAfter.roundCount.toString()).eq(closedRoundIdx.addn(1)),
+                "round_count must increment"
+            );
+
+            // --- RoundRecord written for the closed round. ---
+            const rr = await sdk.fetchRoundRecord(closedRoundIdx);
+            const walnPurchased = BigInt(rr.walnPurchased.toString());
+            assert.ok(walnPurchased > 0n, "round record must record purchased wALN");
+            assert.ok(
+                walnPurchased <= walnInRoundBefore,
+                "purchased cannot exceed wALN actually delivered to the round"
+            );
+
+            // --- Dust invariant: undistributed wALN rolls into carryover. ---
+            const dustAfter = BigInt(stateAfter.walnDustCarryover.toString());
+            assert.equal(
+                dustAfter,
+                dustBefore + (walnInRoundBefore - walnPurchased),
+                "leftover wALN must roll into dust carryover"
+            );
+
+            // --- Per-investor: pro-rata allocation + refund of unused locked USDC. ---
+            const alloc1 = await sdk.fetchInvestorAlloc(closedRoundIdx, investor1.publicKey);
+            const alloc2 = await sdk.fetchInvestorAlloc(closedRoundIdx, investor2.publicKey);
+            const waln1 = alloc1!.walnAmount;
+            const waln2 = alloc2!.walnAmount;
+            assert.ok(waln1 > 0n && waln2 > 0n, "both investors get a pro-rata allocation");
+            assert.equal(waln1 + waln2, walnPurchased, "allocations must sum to purchased total");
+
+            const spent1 = (waln1 * floorPrice) / walnScale;
+            const spent2 = (waln2 * floorPrice) / walnScale;
+
+            const e1After = await sdk.fetchInvestorRecord(investor1.publicKey);
+            const e2After = await sdk.fetchInvestorRecord(investor2.publicKey);
+
+            assert.equal(BigInt(e1After!.usdcLockedCurrentRound.toString()), 0n, "inv1 lock cleared");
+            assert.equal(BigInt(e2After!.usdcLockedCurrentRound.toString()), 0n, "inv2 lock cleared");
+            assert.equal(
+                BigInt(e1After!.usdcDeposited.toString()),
+                deposited1Before + (locked1 - spent1),
+                "inv1 must be refunded unused locked USDC"
+            );
+            assert.equal(
+                BigInt(e2After!.usdcDeposited.toString()),
+                deposited2Before + (locked2 - spent2),
+                "inv2 must be refunded unused locked USDC"
+            );
+            assert.equal(
+                BigInt(e1After!.walnPurchasedTotal.toString()),
+                purchased1Before + waln1,
+                "inv1 waln_purchased_total must grow by its allocation"
+            );
+            assert.equal(
+                BigInt(e2After!.walnPurchasedTotal.toString()),
+                purchased2Before + waln2,
+                "inv2 waln_purchased_total must grow by its allocation"
+            );
+        });
+
+        it("next sell starts a brand-new round after a close", async () => {
+            const stateBefore = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(stateBefore.roundStarted, 0, "no round active before the next sell");
+            const roundCountBefore = new BN(stateBefore.roundCount.toString());
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.sellWalnIx({
+                        seller: seller.publicKey,
+                        sellerWalnAccount: sellerWalnAcc,
+                        sellerUsdcAccount: sellerUsdcAcc,
+                        walnMint,
+                        usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                        walnAmount: SELL_AMOUNT_PARTIAL,
+                    })
+                ),
+                [seller]
+            );
+
+            const stateAfter = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(stateAfter.roundStarted, 1, "the sell must start a fresh round");
+            assert.ok(
+                stateAfter.currentRoundWaln.eq(SELL_AMOUNT_PARTIAL),
+                "new round must reflect the just-sold wALN"
+            );
+            assert.ok(
+                new BN(stateAfter.roundCount.toString()).eq(roundCountBefore),
+                "round_count unchanged until this new round triggers"
+            );
+        });
+    });
+
+    // ---------------------------------------------------------------------------
     // 100-investor scale test
     // ---------------------------------------------------------------------------
     describe.skip("100-investor pool scale test", () => {

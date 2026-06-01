@@ -418,6 +418,27 @@ export class FloorSdk {
         this.program.methods.fundTreasury(amount).accounts(accounts as any).instruction(),
       cancelRound: (): Promise<TransactionInstruction> =>
         this.program.methods.cancelRound().accounts({ admin: adminPubkey, contractState, investorPool } as any).instruction(),
+      closeRound: async (): Promise<TransactionInstruction> => {
+        const state = await this.program.account.programState.fetch(contractState);
+        const roundIndex = state.roundCount as BN;
+        const [treasury] = this.treasuryPda();
+        const [roundRecord] = this.roundRecordPda(roundIndex);
+        const [roundLockedWaln] = this.roundLockedWalnPda(roundIndex);
+        return this.program.methods
+          .closeRound()
+          .accounts({
+            admin: adminPubkey,
+            contractState,
+            investorPool,
+            treasury,
+            systemProgram: SystemProgram.programId,
+          } as any)
+          .remainingAccounts([
+            { pubkey: roundRecord, isSigner: false, isWritable: true },
+            { pubkey: roundLockedWaln, isSigner: false, isWritable: true },
+          ])
+          .instruction();
+      },
       transferAuthority: (newAdmin: PublicKey): Promise<TransactionInstruction> =>
         this.program.methods.transferAuthority().accounts({ admin: adminPubkey, newAdmin, contractState } as any).instruction(),
     };
