@@ -412,8 +412,10 @@ export class FloorSdk {
           contractState,
           investorPool,
         } as any).instruction(),
-      setPaused: (paused: boolean): Promise<TransactionInstruction> =>
-        this.program.methods.setPaused(paused).accounts(accounts as any).instruction(),
+      setSellPaused: (paused: boolean): Promise<TransactionInstruction> =>
+        this.program.methods.setSellPaused(paused).accounts(accounts as any).instruction(),
+      setFrozen: (frozen: boolean): Promise<TransactionInstruction> =>
+        this.program.methods.setFrozen(frozen).accounts(accounts as any).instruction(),
       fundTreasury: (amount: BN): Promise<TransactionInstruction> =>
         this.program.methods.fundTreasury(amount).accounts(accounts as any).instruction(),
       withdrawTreasury: (amount: BN): Promise<TransactionInstruction> =>

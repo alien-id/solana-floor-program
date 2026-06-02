@@ -575,7 +575,7 @@ describe("floor-program", () => {
             assert.ok(state.floorPriceUsdc.eq(FLOOR_PRICE));
             assert.ok(state.roundSizeWaln.eq(ROUND_SIZE));
             assert.ok(state.lockPeriodSeconds.eq(LOCK_PERIOD));
-            assert.equal(state.paused, 0);
+            assert.equal(state.sellPaused, 0);
             assert.equal(state.roundStarted, 0);
             assert.ok(state.roundCount.eqn(0));
         });
@@ -789,16 +789,30 @@ describe("floor-program", () => {
 
         it("set_paused pauses and unpauses", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
             let state = await sdk.program.account.programState.fetch(contractState);
-            assert.equal(state.paused, 1);
+            assert.equal(state.sellPaused, 1);
 
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
             );
             state = await sdk.program.account.programState.fetch(contractState);
-            assert.equal(state.paused, 0);
+            assert.equal(state.sellPaused, 0);
+        });
+
+        it("set_frozen freezes and unfreezes", async () => {
+            await provider.sendAndConfirm(
+                new Transaction().add(await sdk.admin(admin.publicKey).setFrozen(true))
+            );
+            let state = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(state.frozen, 1);
+
+            await provider.sendAndConfirm(
+                new Transaction().add(await sdk.admin(admin.publicKey).setFrozen(false))
+            );
+            state = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(state.frozen, 0);
         });
 
         it("fund treasury by admin", async () => {
@@ -1126,7 +1140,7 @@ describe("floor-program", () => {
 
         it("allows deposit when contract is paused", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
             try {
                 await provider.sendAndConfirm(
@@ -1143,7 +1157,7 @@ describe("floor-program", () => {
                 );
             } finally {
                 await provider.sendAndConfirm(
-                    new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                    new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
                 );
                 await provider.sendAndConfirm(
                     new Transaction().add(
@@ -1230,7 +1244,7 @@ describe("floor-program", () => {
 
         it("allows withdrawal when contract is paused", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
             try {
                 await provider.sendAndConfirm(
@@ -1246,7 +1260,7 @@ describe("floor-program", () => {
                 );
             } finally {
                 await provider.sendAndConfirm(
-                    new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                    new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
                 );
                 await provider.sendAndConfirm(
                     new Transaction().add(
@@ -1571,7 +1585,7 @@ describe("floor-program", () => {
 
         it("rejects sell when contract is paused", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
 
             try {
@@ -1591,10 +1605,10 @@ describe("floor-program", () => {
                 );
                 assert.fail("should have thrown");
             } catch (e: any) {
-                assert.include(e.toString(), "ContractPaused");
+                assert.include(e.toString(), "SellPaused");
             } finally {
                 await provider.sendAndConfirm(
-                    new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                    new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
                 );
             }
         });
@@ -1717,9 +1731,9 @@ describe("floor-program", () => {
             assert.equal(lw!.claimed, true);
         });
 
-        it("allows claim attempt when contract is paused (fails for other reason, not ContractPaused)", async () => {
+        it("allows claim attempt when contract is paused (fails for other reason, not SellPaused)", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
             try {
                 await provider.sendAndConfirm(
@@ -1739,7 +1753,7 @@ describe("floor-program", () => {
                 assert.include(e.toString(), "AlreadyClaimed");
             } finally {
                 await provider.sendAndConfirm(
-                    new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                    new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
                 );
             }
         });
