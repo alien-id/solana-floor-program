@@ -477,8 +477,22 @@ pub fn handle_remove_investor_from_pool(
     let program_id = program.id();
     let (contract_state, _) = get_contract_state_address(&program_id);
     let (investor_pool, _) = get_investor_pool_address(&program_id);
+    let (usdc_vault, _) = get_usdc_vault_address(&program_id);
+
+    let rpc = program.rpc();
+    let state = load_zero_copy::<ProgramState>(&rpc, &contract_state)?;
+    let usdc_mint = state.usdc_mint;
+
+    let investor_usdc_account =
+        anchor_spl::associated_token::get_associated_token_address_with_program_id(
+            &investor,
+            &usdc_mint,
+            &anchor_spl::token::ID,
+        );
 
     println!("Removing investor {} from pool...", investor);
+    println!("  USDC Mint:         {}", usdc_mint);
+    println!("  Investor USDC ATA: {}", investor_usdc_account);
 
     let tx = program
         .request()
@@ -486,8 +500,13 @@ pub fn handle_remove_investor_from_pool(
             admin: program.payer(),
             contract_state,
             investor_pool,
+            investor,
+            usdc_mint,
+            investor_usdc_account,
+            usdc_vault,
+            usdc_token_program: anchor_spl::token::ID,
         })
-        .args(floor_program::instruction::RemoveInvestorFromPool { investor })
+        .args(floor_program::instruction::RemoveInvestorFromPool {})
         .send()?;
 
     println!("Transaction successful: {}", tx);

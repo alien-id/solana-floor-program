@@ -1,8 +1,11 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{program::invoke, system_instruction};
+use anchor_spl::token_interface::{
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
+};
 
 use crate::errors::FloorError;
-use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, TREASURY_SEED};
+use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, TREASURY_SEED, USDC_VAULT_SEED};
 use crate::state::{InvestorPool, InvestorRecord, ProgramState};
 
 #[derive(Accounts)]
@@ -160,6 +163,7 @@ pub struct RemoveInvestorFromPool<'info> {
     pub admin: Signer<'info>,
 
     #[account(
+        mut,
         seeds = [CONTRACT_STATE_SEED],
         bump,
         constraint = contract_state.load()?.admin == admin.key() @ FloorError::Unauthorized,
@@ -172,43 +176,118 @@ pub struct RemoveInvestorFromPool<'info> {
         bump,
     )]
     pub investor_pool: AccountLoader<'info, InvestorPool>,
+
+    /// CHECK: investor wallet whose pool slot is being reclaimed; used only as a key
+    /// and to authorize the refund destination token account.
+    pub investor: UncheckedAccount<'info>,
+
+    pub usdc_mint: InterfaceAccount<'info, Mint>,
+
+    #[account(
+        mut,
+        token::mint = usdc_mint,
+        token::authority = investor,
+        token::token_program = usdc_token_program,
+    )]
+    pub investor_usdc_account: InterfaceAccount<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        seeds = [USDC_VAULT_SEED],
+        bump,
+        token::mint = usdc_mint,
+        token::authority = contract_state,
+        token::token_program = usdc_token_program,
+    )]
+    pub usdc_vault: InterfaceAccount<'info, TokenAccount>,
+
+    pub usdc_token_program: Interface<'info, TokenInterface>,
 }
 
-pub fn remove_investor_from_pool(
-    ctx: Context<RemoveInvestorFromPool>,
-    investor: Pubkey,
-) -> Result<()> {
-    let mut pool = ctx.accounts.investor_pool.load_mut()?;
-    let count = pool.count as usize;
+pub fn remove_investor_from_pool(ctx: Context<RemoveInvestorFromPool>) -> Result<()> {
+    let investor = ctx.accounts.investor.key();
 
-    let idx = pool.investors[..count]
-        .iter()
-        .position(|r| r.investor == investor)
-        .ok_or(FloorError::InvalidInvestor)?;
-
+    let state_bump;
+    let usdc_decimals;
     {
-        let record = &pool.investors[idx];
+        let state = ctx.accounts.contract_state.load()?;
         require!(
-            record.aat_volume == 0
-                && record.usdc_deposited == 0
-                && record.usdc_locked_current_round == 0,
-            FloorError::InvestorNotInactive
+            ctx.accounts.usdc_mint.key() == state.usdc_mint,
+            FloorError::InvalidMint
         );
+        state_bump = state.bump;
+        usdc_decimals = ctx.accounts.usdc_mint.decimals;
     }
 
-    let last = count - 1;
-    let moved = pool.investors[last];
-    pool.investors[idx] = moved;
-    pool.investors[last] = InvestorRecord {
-        investor: Pubkey::default(),
-        usdc_deposited: 0,
-        usdc_locked_current_round: 0,
-        usdc_committed: 0,
-        waln_purchased_total: 0,
-        aat_volume: 0,
-        usdc_unlock_ts: 0,
-    };
-    pool.count -= 1;
+    // Locate the record and enforce inactivity. A leftover (dust) USDC deposit is
+    // allowed here because it is refunded below; only an active allocation or
+    // round-locked funds block removal.
+    let refund;
+    {
+        let pool = ctx.accounts.investor_pool.load()?;
+        let count = pool.count as usize;
+        let idx = pool.investors[..count]
+            .iter()
+            .position(|r| r.investor == investor)
+            .ok_or(FloorError::InvalidInvestor)?;
+        let record = &pool.investors[idx];
+        require!(
+            record.aat_volume == 0 && record.usdc_locked_current_round == 0,
+            FloorError::InvestorNotInactive
+        );
+        refund = record.usdc_deposited;
+    }
+
+    // Refund any remaining deposit back to the investor and reconcile the lobby total.
+    // The withdraw-lock is intentionally bypassed: this is a privileged admin teardown
+    // that returns the funds to their rightful owner.
+    if refund > 0 {
+        let seeds: &[&[u8]] = &[CONTRACT_STATE_SEED, &[state_bump]];
+        let signer = &[seeds];
+        transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.usdc_token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.usdc_vault.to_account_info(),
+                    mint: ctx.accounts.usdc_mint.to_account_info(),
+                    to: ctx.accounts.investor_usdc_account.to_account_info(),
+                    authority: ctx.accounts.contract_state.to_account_info(),
+                },
+                signer,
+            ),
+            refund,
+            usdc_decimals,
+        )?;
+
+        let mut state = ctx.accounts.contract_state.load_mut()?;
+        state.total_usdc_in_lobby = state
+            .total_usdc_in_lobby
+            .checked_sub(refund)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+    }
+
+    // Swap-remove the now fully-inactive record.
+    {
+        let mut pool = ctx.accounts.investor_pool.load_mut()?;
+        let count = pool.count as usize;
+        let idx = pool.investors[..count]
+            .iter()
+            .position(|r| r.investor == investor)
+            .ok_or(FloorError::InvalidInvestor)?;
+        let last = count - 1;
+        let moved = pool.investors[last];
+        pool.investors[idx] = moved;
+        pool.investors[last] = InvestorRecord {
+            investor: Pubkey::default(),
+            usdc_deposited: 0,
+            usdc_locked_current_round: 0,
+            usdc_committed: 0,
+            waln_purchased_total: 0,
+            aat_volume: 0,
+            usdc_unlock_ts: 0,
+        };
+        pool.count -= 1;
+    }
 
     Ok(())
 }

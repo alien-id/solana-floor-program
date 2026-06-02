@@ -873,7 +873,11 @@ describe("floor-program", () => {
                     new Transaction().add(
                         await sdk
                             .admin(lifeInvestor.publicKey)
-                            .removeInvestorFromPool(lifeInvestor.publicKey)
+                            .removeInvestorFromPool({
+                                investor: lifeInvestor.publicKey,
+                                usdcMint,
+                                investorUsdcAccount: lifeUsdcAcc,
+                            })
                     ),
                     [lifeInvestor]
                 );
@@ -888,13 +892,18 @@ describe("floor-program", () => {
         });
 
         it("remove_investor_from_pool rejects an active investor", async () => {
-            // Investor still has aat_volume=400 and a USDC deposit -> not inactive.
+            // Investor still has aat_volume=400 -> not inactive (a leftover USDC
+            // deposit alone no longer blocks removal; it is refunded instead).
             try {
                 await provider.sendAndConfirm(
                     new Transaction().add(
                         await sdk
                             .admin(admin.publicKey)
-                            .removeInvestorFromPool(lifeInvestor.publicKey)
+                            .removeInvestorFromPool({
+                                investor: lifeInvestor.publicKey,
+                                usdcMint,
+                                investorUsdcAccount: lifeUsdcAcc,
+                            })
                     )
                 );
                 assert.fail("active investor removal should have been rejected");
@@ -907,8 +916,9 @@ describe("floor-program", () => {
             }
         });
 
-        it("admin winds the investor down to zero and reclaims the pool slot", async () => {
-            // 1. Zero the allocation (frees the global AAT cap).
+        it("admin winds the investor down to zero and reclaims the slot, refunding the leftover USDC", async () => {
+            // 1. Zero the allocation (frees the global AAT cap). The investor still
+            //    has a leftover USDC deposit, which removal must refund automatically.
             await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.updateAatVolumeIx({
@@ -926,28 +936,28 @@ describe("floor-program", () => {
                 `expected total_aat_volume=${expectedTotalAfterZero}, got ${stateAfterZero.totalAatVolume}`
             );
 
-            // 2. Drain the USDC deposit so the record is fully inactive.
-            await provider.sendAndConfirm(
-                new Transaction().add(
-                    await sdk.withdrawUsdcIx({
-                        investor: lifeInvestor.publicKey,
-                        investorUsdcAccount: lifeUsdcAcc,
-                        usdcMint,
-                        amount: DEPOSIT,
-                    })
-                ),
-                [lifeInvestor]
-            );
-
             const poolBefore = await sdk.fetchInvestorPool();
             const countBefore = poolBefore.count;
+            const recordBefore = await sdk.fetchInvestorRecord(lifeInvestor.publicKey);
+            assert.ok(
+                recordBefore!.usdcDeposited.eq(DEPOSIT),
+                `expected leftover deposit=${DEPOSIT}, got ${recordBefore!.usdcDeposited}`
+            );
 
-            // 3. Remove the now-inactive investor.
+            const investorUsdcBefore = await getTokenBalance(provider, lifeUsdcAcc);
+            const lobbyBefore = new BN(stateAfterZero.totalUsdcInLobby.toString());
+
+            // 2. Remove the now-inactive investor in a single admin tx; the leftover
+            //    deposit is refunded to the investor's USDC account.
             await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk
                         .admin(admin.publicKey)
-                        .removeInvestorFromPool(lifeInvestor.publicKey)
+                        .removeInvestorFromPool({
+                            investor: lifeInvestor.publicKey,
+                            usdcMint,
+                            investorUsdcAccount: lifeUsdcAcc,
+                        })
                 )
             );
 
@@ -963,13 +973,55 @@ describe("floor-program", () => {
                 "removed investor should no longer be in the pool"
             );
 
+            // 3. The leftover USDC was refunded to the investor and the lobby total
+            //    was decremented by the same amount.
+            const investorUsdcAfter = await getTokenBalance(provider, lifeUsdcAcc);
+            assert.equal(
+                investorUsdcAfter - investorUsdcBefore,
+                BigInt(DEPOSIT.toString()),
+                "investor should be refunded the leftover deposit"
+            );
+
+            const stateFinal = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(
+                lobbyBefore
+                    .sub(new BN(stateFinal.totalUsdcInLobby.toString()))
+                    .eq(DEPOSIT),
+                "total_usdc_in_lobby should decrease by the refunded amount"
+            );
+
             // 4. Global AAT volume is back to baseline minus the wound-down allocation,
             //    leaving capacity for new investors (issue #16 resolved).
-            const stateFinal = await sdk.program.account.programState.fetch(contractState);
             assert.ok(
                 new BN(stateFinal.totalAatVolume.toString()).eq(expectedTotalAfterZero),
                 `expected total_aat_volume=${expectedTotalAfterZero}, got ${stateFinal.totalAatVolume}`
             );
+        });
+
+        it("deposit_usdc rejects an AAT NFT with zero allocation", async () => {
+            // The wound-down investor's NFT now has aat_volume == 0; a dust deposit
+            // must not let them re-occupy a pool slot.
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.depositUsdcIx({
+                            investor: lifeInvestor.publicKey,
+                            investorUsdcAccount: lifeUsdcAcc,
+                            usdcMint,
+                            aatNft: lifeNft,
+                            usdcAmount: new BN(1),
+                        })
+                    ),
+                    [lifeInvestor]
+                );
+                assert.fail("zero-allocation deposit should have been rejected");
+            } catch (e: any) {
+                assert.ok(
+                    e.toString().includes("ZeroAatAllocation") ||
+                    e.toString().includes("6026"),
+                    `expected ZeroAatAllocation error, got: ${e.toString()}`
+                );
+            }
         });
     });
 

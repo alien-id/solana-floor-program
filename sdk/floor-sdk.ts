@@ -443,12 +443,24 @@ export class FloorSdk {
         this.program.methods.fundTreasury(amount).accounts(accounts as any).instruction(),
       cancelRound: (): Promise<TransactionInstruction> =>
         this.program.methods.cancelRound().accounts({ admin: adminPubkey, contractState, investorPool } as any).instruction(),
-      removeInvestorFromPool: (investor: PublicKey): Promise<TransactionInstruction> =>
-        this.program.methods.removeInvestorFromPool(investor).accounts({
+      removeInvestorFromPool: (args: {
+        investor: PublicKey;
+        usdcMint: PublicKey;
+        investorUsdcAccount: PublicKey;
+        usdcTokenProgram?: PublicKey;
+      }): Promise<TransactionInstruction> => {
+        const [usdcVault] = this.usdcVaultPda();
+        return this.program.methods.removeInvestorFromPool().accounts({
           admin: adminPubkey,
           contractState,
           investorPool,
-        } as any).instruction(),
+          investor: args.investor,
+          usdcMint: args.usdcMint,
+          investorUsdcAccount: args.investorUsdcAccount,
+          usdcVault,
+          usdcTokenProgram: args.usdcTokenProgram ?? TOKEN_PROGRAM_ID,
+        } as any).instruction();
+      },
       transferAuthority: (newAdmin: PublicKey): Promise<TransactionInstruction> =>
         this.program.methods.transferAuthority().accounts({ admin: adminPubkey, newAdmin, contractState } as any).instruction(),
     };

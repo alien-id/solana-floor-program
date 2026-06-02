@@ -54,4 +54,6 @@ pub enum FloorError {
     UsdcLocked,
     #[msg("Investor is not inactive — clear aat_volume, deposits, and locked funds before removal")]
     InvestorNotInactive,
+    #[msg("AAT NFT has zero allocation — deposits require a positive aat_volume")]
+    ZeroAatAllocation,
 }

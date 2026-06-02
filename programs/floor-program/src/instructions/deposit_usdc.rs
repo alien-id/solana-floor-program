@@ -69,6 +69,7 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
         &ctx.accounts.aat_nft.to_account_info(),
         &ctx.accounts.investor.key(),
     )?;
+    require!(aat_vol > 0, FloorError::ZeroAatAllocation);
 
     let usdc_withdraw_lock_seconds;
     {

@@ -73,11 +73,8 @@ pub mod floor_program {
         admin::cancel_round(ctx)
     }
 
-    pub fn remove_investor_from_pool(
-        ctx: Context<RemoveInvestorFromPool>,
-        investor: Pubkey,
-    ) -> Result<()> {
-        admin::remove_investor_from_pool(ctx, investor)
+    pub fn remove_investor_from_pool(ctx: Context<RemoveInvestorFromPool>) -> Result<()> {
+        admin::remove_investor_from_pool(ctx)
     }
 
     pub fn fund_treasury(ctx: Context<FundTreasury>, amount: u64) -> Result<()> {
