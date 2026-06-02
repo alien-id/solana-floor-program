@@ -50,10 +50,6 @@ pub struct ProgramState {
     pub _padding: [u8; 1],
 }
 
-
-#[account]
-pub struct AatNftAuthority {}
-
 #[zero_copy]
 pub struct InvestorRecord {
     pub investor: Pubkey,
