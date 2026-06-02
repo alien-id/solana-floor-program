@@ -31,3 +31,10 @@ pub(crate) fn get_aat_nft_mint_address(investor: &Pubkey, program_id: &Pubkey) -
 pub(crate) fn get_nft_authority_address(program_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[b"nft_authority"], program_id)
 }
+
+pub(crate) fn get_program_data_address(program_id: &Pubkey) -> (Pubkey, u8) {
+    let bpf_loader_upgradeable = "BPFLoaderUpgradeab1e11111111111111111111111"
+        .parse::<Pubkey>()
+        .expect("valid BPF upgradeable loader id");
+    Pubkey::find_program_address(&[program_id.as_ref()], &bpf_loader_upgradeable)
+}
