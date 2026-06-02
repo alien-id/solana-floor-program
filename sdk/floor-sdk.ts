@@ -228,6 +228,10 @@ export class FloorSdk {
     const [contractState] = this.contractStatePda();
     const [usdcVault] = this.usdcVaultPda();
     const [investorPool] = this.investorPoolPda();
+    const investorAatAccount = this.investorAatAccount(
+      args.investor,
+      args.aatNft
+    );
 
     return this.program.methods
       .depositUsdc(args.usdcAmount)
@@ -239,6 +243,8 @@ export class FloorSdk {
         investorUsdcAccount: args.investorUsdcAccount,
         usdcVault,
         aatNft: args.aatNft,
+        investorAatAccount,
+        aatTokenProgram: TOKEN_2022_PROGRAM_ID,
         usdcTokenProgram: args.usdcTokenProgram ?? TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       } as any)

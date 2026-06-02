@@ -9,6 +9,7 @@ import {
     sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import {
+    createBurnInstruction,
     createTransferInstruction,
     getAssociatedTokenAddressSync,
     TOKEN_2022_PROGRAM_ID,
@@ -641,6 +642,36 @@ describe("floor-program", () => {
                 );
             }
         });
+
+        it("rejects burning investor1 AAT NFT (token account is frozen)", async () => {
+            const srcAta = sdk.investorAatAccount(investor1.publicKey, investor1NftPubkey);
+
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        createBurnInstruction(
+                            srcAta,
+                            investor1NftPubkey,
+                            investor1.publicKey,
+                            1,
+                            [],
+                            TOKEN_2022_PROGRAM_ID
+                        )
+                    ),
+                    [investor1]
+                );
+                assert.fail("burn should have been rejected");
+            } catch (e: any) {
+                // SPL Token AccountFrozen = error 17 (0x11)
+                assert.ok(
+                    e.toString().includes("frozen") ||
+                    e.toString().includes("Frozen") ||
+                    e.toString().includes("0x11") ||
+                    e.toString().includes("custom program error"),
+                    `expected account-frozen error, got: ${e.toString()}`
+                );
+            }
+        });
     });
 
     // ---------------------------------------------------------------------------
@@ -1189,10 +1220,17 @@ describe("floor-program", () => {
                 );
                 assert.fail("should have thrown");
             } catch (e: any) {
+                // The investor has no AAT token account for the foreign NFT's
+                // mint, so the `associated_token` constraint rejects it
+                // (AccountNotInitialized) before the handler runs. If such an
+                // ATA did exist, the handler would reject with NoAatNft /
+                // InvalidAatNft instead.
                 assert.ok(
                     e.toString().includes("NoAatNft") ||
-                    e.toString().includes("InvalidAatNft"),
-                    `expected NoAatNft or InvalidAatNft, got: ${e.toString()}`
+                    e.toString().includes("InvalidAatNft") ||
+                    e.toString().includes("AccountNotInitialized") ||
+                    e.toString().includes("0xbc4"),
+                    `expected NoAatNft / InvalidAatNft / AccountNotInitialized, got: ${e.toString()}`
                 );
             }
         });
