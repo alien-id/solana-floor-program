@@ -131,6 +131,19 @@ pub fn handler<'info>(
             .ok_or(FloorError::ArithmeticOverflow)?;
         require!(waln_amount <= remaining_in_round, FloorError::SellAmountExceedsRound);
 
+        let post_sale_remaining = remaining_in_round
+            .checked_sub(waln_amount)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+        if post_sale_remaining > 0 {
+            let local_waln_scale = 10_u128.pow(waln_decimals as u32);
+            let post_sale_usdc = (post_sale_remaining as u128)
+                .checked_mul(eff_floor_price as u128)
+                .ok_or(FloorError::ArithmeticOverflow)?
+                .checked_div(local_waln_scale)
+                .ok_or(FloorError::ArithmeticOverflow)?;
+            require!(post_sale_usdc > 0, FloorError::SellLeavesUnpayableDust);
+        }
+
         floor_price_usdc = eff_floor_price;
         current_round_size_waln = eff_round_size;
     }
