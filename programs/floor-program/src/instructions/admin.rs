@@ -219,9 +219,6 @@ pub fn remove_investor_from_pool(ctx: Context<RemoveInvestorFromPool>) -> Result
         usdc_decimals = ctx.accounts.usdc_mint.decimals;
     }
 
-    // Locate the record and enforce inactivity. A leftover (dust) USDC deposit is
-    // allowed here because it is refunded below; only an active allocation or
-    // round-locked funds block removal.
     let refund;
     {
         let pool = ctx.accounts.investor_pool.load()?;
@@ -238,7 +235,6 @@ pub fn remove_investor_from_pool(ctx: Context<RemoveInvestorFromPool>) -> Result
         refund = record.usdc_deposited;
     }
 
-    // Refund any remaining deposit back to the investor and reconcile the lobby total.
     // The withdraw-lock is intentionally bypassed: this is a privileged admin teardown
     // that returns the funds to their rightful owner.
     if refund > 0 {
@@ -266,7 +262,6 @@ pub fn remove_investor_from_pool(ctx: Context<RemoveInvestorFromPool>) -> Result
             .ok_or(FloorError::ArithmeticOverflow)?;
     }
 
-    // Swap-remove the now fully-inactive record.
     {
         let mut pool = ctx.accounts.investor_pool.load_mut()?;
         let count = pool.count as usize;
