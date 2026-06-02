@@ -809,6 +809,66 @@ describe("floor-program", () => {
             )
         });
 
+        it("withdraw treasury by admin", async () => {
+            const [treasury] = sdk.treasuryPda();
+            const beforeTreasury = await provider.connection.getBalance(treasury);
+            const beforeAdmin = await provider.connection.getBalance(admin.publicKey);
+            const amount = new BN(500_000_000);
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.admin(admin.publicKey).withdrawTreasury(amount)
+                )
+            );
+
+            const afterTreasury = await provider.connection.getBalance(treasury);
+            const afterAdmin = await provider.connection.getBalance(admin.publicKey);
+            assert.equal(beforeTreasury - afterTreasury, amount.toNumber());
+            assert.ok(afterAdmin > beforeAdmin, "admin balance should increase (minus tx fee)");
+        });
+
+        it("withdraw_treasury rejects non-admin signer", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(investor1.publicKey).withdrawTreasury(new BN(1))
+                    ),
+                    [investor1]
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.include(e.toString(), "Unauthorized");
+            }
+        });
+
+        it("withdraw_treasury rejects zero amount", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(admin.publicKey).withdrawTreasury(new BN(0))
+                    )
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.include(e.toString(), "ZeroAmount");
+            }
+        });
+
+        it("withdraw_treasury fails when amount exceeds balance", async () => {
+            const [treasury] = sdk.treasuryPda();
+            const balance = await provider.connection.getBalance(treasury);
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(admin.publicKey).withdrawTreasury(new BN(balance + 1_000_000_000))
+                    )
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.include(e.toString(), "InsufficientFunds");
+            }
+        });
+
         it("rejects non-admin signer", async () => {
             try {
                 await provider.sendAndConfirm(

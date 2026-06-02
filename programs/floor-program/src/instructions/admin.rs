@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{program::invoke, system_instruction};
+use anchor_lang::solana_program::{program::{invoke, invoke_signed}, system_instruction};
 
 use crate::errors::FloorError;
 use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, TREASURY_SEED};
@@ -110,6 +110,29 @@ pub struct FundTreasury<'info> {
 }
 
 #[derive(Accounts)]
+pub struct WithdrawTreasury<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+
+    #[account(
+        seeds = [CONTRACT_STATE_SEED],
+        bump,
+        constraint = contract_state.load()?.admin == admin.key() @ FloorError::Unauthorized,
+    )]
+    pub contract_state: AccountLoader<'info, ProgramState>,
+
+    /// CHECK: Treasury PDA — system-owned, holds SOL for round account rent
+    #[account(
+        mut,
+        seeds = [TREASURY_SEED],
+        bump,
+    )]
+    pub treasury: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 pub struct CancelRound<'info> {
     pub admin: Signer<'info>,
 
@@ -169,6 +192,28 @@ pub fn fund_treasury(ctx: Context<FundTreasury>, amount: u64) -> Result<()> {
             ctx.accounts.treasury.to_account_info(),
             ctx.accounts.system_program.to_account_info(),
         ],
+    )?;
+
+    Ok(())
+}
+
+pub fn withdraw_treasury(ctx: Context<WithdrawTreasury>, amount: u64) -> Result<()> {
+    require!(amount > 0, FloorError::ZeroAmount);
+    require!(ctx.accounts.treasury.lamports() >= amount, FloorError::InsufficientFunds);
+
+    let treasury_bump = ctx.bumps.treasury;
+    invoke_signed(
+        &system_instruction::transfer(
+            &ctx.accounts.treasury.key(),
+            &ctx.accounts.admin.key(),
+            amount,
+        ),
+        &[
+            ctx.accounts.treasury.to_account_info(),
+            ctx.accounts.admin.to_account_info(),
+            ctx.accounts.system_program.to_account_info(),
+        ],
+        &[&[TREASURY_SEED, &[treasury_bump]]],
     )?;
 
     Ok(())
