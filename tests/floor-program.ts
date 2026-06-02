@@ -1741,6 +1741,45 @@ describe("floor-program", () => {
     // 7. claim_waln
     // ---------------------------------------------------------------------------
     describe("claim_waln", () => {
+        it("rejects claim with empty remaining_accounts when mint has a hook", async () => {
+            await sleep(500);
+            const round0 = new BN(0);
+
+            const before = await sdk.fetchInvestorAlloc(round0, investor1.publicKey);
+            assert.ok(before && !before.claimed, "investor1 round-0 must be unclaimed so the claim reaches the hook gate");
+
+            const [contractState] = sdk.contractStatePda();
+            const [walnVault] = sdk.walnVaultPda();
+            const [roundLockedWaln] = sdk.roundLockedWalnPda(round0);
+
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.program.methods
+                            .claimWaln(round0, [0, 0, 0, 0])
+                            .accounts({
+                                investor: investor1.publicKey,
+                                contractState,
+                                roundLockedWaln,
+                                walnMint,
+                                investorWalnAccount: investor1WalnAcc,
+                                walnVault,
+                                walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                            } as any)
+                            .remainingAccounts([]) // empty — hooked mint must reject at the floor gate
+                            .instruction()
+                    ),
+                    [investor1]
+                );
+                assert.fail("claim with empty remaining_accounts should have been rejected");
+            } catch (e: any) {
+                assert.include(e.toString(), "InvalidHookAccountsCount");
+            }
+
+            const after = await sdk.fetchInvestorAlloc(round0, investor1.publicKey);
+            assert.ok(after && !after.claimed, "alloc must stay unclaimed after the rejected claim");
+        });
+
         it("claims locked wALN after lock expires (lock_period=0)", async () => {
             // With lock_period = 0, unlock = triggered_at + 0 = triggered_at
             // The clock moves forward between slots, so this should pass immediately.

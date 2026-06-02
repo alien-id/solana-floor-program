@@ -94,8 +94,7 @@ pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _rou
     let seeds: &[&[u8]] = &[CONTRACT_STATE_SEED, &[state_bump]];
     let signer = &[seeds];
 
-    if !ctx.remaining_accounts.is_empty() {
-        let hook_program_id = get_hook_program_id(&ctx.accounts.waln_mint.to_account_info())?;
+    if let Ok(hook_program_id) = get_hook_program_id(&ctx.accounts.waln_mint.to_account_info()) {
         validate_hook_accounts(
             ctx.remaining_accounts,
             &ctx.accounts.waln_mint.key(),
