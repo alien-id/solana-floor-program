@@ -9,7 +9,7 @@ use spl_token_2022::{extension::ExtensionType, state::Mint};
 use spl_token_2022::instruction::AuthorityType;
 use crate::errors::FloorError;
 use crate::seeds::{AAT_NFT_SEED, CONTRACT_STATE_SEED};
-use crate::state::{AatNftAuthority, ProgramState};
+use crate::state::ProgramState;
 
 #[derive(Accounts)]
 pub struct MintAatNft<'info> {
@@ -39,14 +39,12 @@ pub struct MintAatNft<'info> {
     #[account(mut)]
     pub investor_aat_account: UncheckedAccount<'info>,
 
+    /// CHECK: PDA used only as mint/metadata authority via signed CPI — no data, no init
     #[account(
-        init_if_needed,
         seeds = [b"nft_authority"],
         bump,
-        space = 8,
-        payer = admin,
     )]
-    pub nft_authority: Account<'info, AatNftAuthority>,
+    pub nft_authority: UncheckedAccount<'info>,
 
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token2022>,

@@ -50,10 +50,6 @@ pub struct ProgramState {
     pub frozen: u8,
 }
 
-
-#[account]
-pub struct AatNftAuthority {}
-
 #[zero_copy]
 pub struct InvestorRecord {
     pub investor: Pubkey,

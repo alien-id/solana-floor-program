@@ -3,7 +3,7 @@ use admin_cli::handlers::{
     handle_initialize, handle_mint_aat_nft, handle_set_floor_price, handle_set_investor_usdc_unlock,
     handle_set_frozen, handle_set_lock_period, handle_set_round_size, handle_set_sell_paused,
     handle_set_usdc_withdraw_lock,
-    handle_transfer_authority,
+    handle_transfer_authority, handle_withdraw_treasury,
 };
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
 use anchor_client::solana_sdk::pubkey::Pubkey;
@@ -79,6 +79,9 @@ enum Commands {
     },
     CancelRound,
     FundTreasury {
+        amount_lamports: u64,
+    },
+    WithdrawTreasury {
         amount_lamports: u64,
     },
     MintAatNft {
@@ -196,6 +199,9 @@ fn main() -> Result<()> {
         Commands::CancelRound => handle_cancel_round(&program)?,
         Commands::FundTreasury { amount_lamports } => {
             handle_fund_treasury(&program, amount_lamports)?
+        }
+        Commands::WithdrawTreasury { amount_lamports } => {
+            handle_withdraw_treasury(&program, amount_lamports)?
         }
         Commands::MintAatNft {
             investor,
