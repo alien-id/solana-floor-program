@@ -71,6 +71,7 @@ pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _rou
     {
         let mut round_locked_waln = ctx.accounts.round_locked_waln.load_mut()?;
         let count = round_locked_waln.count as usize;
+        let unlock_ts = round_locked_waln.unlock;
 
         let idx = round_locked_waln.investors[..count]
             .binary_search_by_key(&investor_key.to_bytes(), |a| a.investor.to_bytes())
@@ -82,7 +83,7 @@ pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _rou
 
         let clock = Clock::get()?;
         require!(
-            clock.unix_timestamp >= alloc.unlock,
+            clock.unix_timestamp >= unlock_ts,
             FloorError::NotYetUnlocked
         );
 
