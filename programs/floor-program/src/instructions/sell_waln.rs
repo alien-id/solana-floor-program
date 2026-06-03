@@ -553,6 +553,10 @@ pub fn handler<'info>(
                     msg!("Auto-start skipped: no eligible investors");
                     state.total_usdc_locked_for_round = 0;
                 }
+                Err(ref e) if e == &FloorError::InvalidParameter.into() => {
+                    msg!("Auto-start skipped: round cap would be zero (round_size * floor_price < 10^decimals)");
+                    state.total_usdc_locked_for_round = 0;
+                }
                 Err(e) => {
                     return Err(e);
                 }

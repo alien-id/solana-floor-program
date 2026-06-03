@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
 use crate::errors::FloorError;
+use crate::instructions::start_round::require_viable_round_params;
 use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, USDC_VAULT_SEED, WALN_VAULT_SEED};
 use crate::state::{InvestorPool, ProgramState};
 
@@ -72,10 +73,9 @@ pub fn handler(
     lock_period_seconds: i64,
 ) -> Result<()> {
     use crate::errors::FloorError;
-    use crate::state::MIN_SELL_WALN;
     require!(floor_price_usdc > 0, FloorError::InvalidParameter);
     require!(round_size_waln > 0, FloorError::InvalidParameter);
-    require!(round_size_waln >= MIN_SELL_WALN, FloorError::InvalidParameter);
+    require_viable_round_params(round_size_waln, floor_price_usdc, ctx.accounts.waln_mint.decimals)?;
 
     let mut state = ctx.accounts.contract_state.load_init()?;
     state.admin = ctx.accounts.admin.key();

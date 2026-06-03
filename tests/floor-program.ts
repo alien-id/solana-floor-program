@@ -1251,6 +1251,17 @@ describe("floor-program", () => {
                 assert.include(e.toString(), "InvalidParameter");
             }
         });
+
+        it("set_round_size rejects a sub-scale round_size * floor_price", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(await sdk.admin(admin.publicKey).setRoundSize(new BN(9_999)))
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.include(e.toString(), "InvalidParameter");
+            }
+        });
     });
 
     // ---------------------------------------------------------------------------

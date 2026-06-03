@@ -1,11 +1,15 @@
+use crate::errors::FloorError;
+use crate::instructions::start_round::require_viable_round_params;
+use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, TREASURY_SEED, USDC_VAULT_SEED};
+use crate::state::{InvestorPool, InvestorRecord, ProgramState};
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{program::{invoke, invoke_signed}, system_instruction};
+use anchor_lang::solana_program::{
+    program::{invoke, invoke_signed},
+    system_instruction,
+};
 use anchor_spl::token_interface::{
     transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
-use crate::errors::FloorError;
-use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, TREASURY_SEED, USDC_VAULT_SEED};
-use crate::state::{InvestorPool, InvestorRecord, ProgramState, MIN_SELL_WALN};
 
 #[derive(Accounts)]
 pub struct AdminOnly<'info> {
@@ -23,14 +27,19 @@ pub struct AdminOnly<'info> {
 pub fn set_floor_price(ctx: Context<AdminOnly>, new_price_usdc: u64) -> Result<()> {
     require!(new_price_usdc > 0, FloorError::InvalidParameter);
     let mut state = ctx.accounts.contract_state.load_mut()?;
+    require_viable_round_params(state.round_size_waln, new_price_usdc, state.waln_decimals)?;
     state.floor_price_usdc = new_price_usdc;
     Ok(())
 }
 
 pub fn set_round_size(ctx: Context<AdminOnly>, new_round_size_waln: u64) -> Result<()> {
     require!(new_round_size_waln > 0, FloorError::InvalidParameter);
-    require!(new_round_size_waln >= MIN_SELL_WALN, FloorError::InvalidParameter);
     let mut state = ctx.accounts.contract_state.load_mut()?;
+    require_viable_round_params(
+        new_round_size_waln,
+        state.floor_price_usdc,
+        state.waln_decimals,
+    )?;
     state.round_size_waln = new_round_size_waln;
     Ok(())
 }
@@ -337,7 +346,10 @@ pub fn fund_treasury(ctx: Context<FundTreasury>, amount: u64) -> Result<()> {
 
 pub fn withdraw_treasury(ctx: Context<WithdrawTreasury>, amount: u64) -> Result<()> {
     require!(amount > 0, FloorError::ZeroAmount);
-    require!(ctx.accounts.treasury.lamports() >= amount, FloorError::InsufficientFunds);
+    require!(
+        ctx.accounts.treasury.lamports() >= amount,
+        FloorError::InsufficientFunds
+    );
 
     let treasury_bump = ctx.bumps.treasury;
     invoke_signed(
