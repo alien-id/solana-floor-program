@@ -2717,7 +2717,7 @@ describe("floor-program", () => {
                                 walnMint,
                                 usdcMint,
                                 walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                                walnAmount: remaining,
+                                maxWalnAmount: remaining,
                                 roundTriggerAccounts: [
                                     {pubkey: roundRecord, isWritable: true},
                                     {pubkey: roundLockedWaln, isWritable: true},

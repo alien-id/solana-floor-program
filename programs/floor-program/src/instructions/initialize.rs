@@ -76,6 +76,7 @@ pub fn handler(
     require!(floor_price_usdc > 0, FloorError::InvalidParameter);
     require!(round_size_waln > 0, FloorError::InvalidParameter);
     require_viable_round_params(round_size_waln, floor_price_usdc, ctx.accounts.waln_mint.decimals)?;
+    require!(lock_period_seconds >= 0, FloorError::InvalidParameter);
 
     let mut state = ctx.accounts.contract_state.load_init()?;
     state.admin = ctx.accounts.admin.key();
