@@ -1498,12 +1498,10 @@ describe("floor-program", () => {
             assert.ok(state.currentRoundWaln.eq(SELL_AMOUNT_PARTIAL));
             assert.equal(state.roundStarted, 1);
 
-            // investor1: min(5e9, floor(20e6 * 100000 / 150000)) = 13_333_333
             const entry1 = await sdk.fetchInvestorRecord(investor1.publicKey);
-            assert.ok(entry1!.usdcLockedCurrentRound.eq(new BN(13_333_333)));
-            assert.ok(entry1!.usdcDeposited.eq(new BN(4_986_666_667)));
+            assert.ok(entry1!.usdcLockedCurrentRound.eq(new BN(13_333_334)));
+            assert.ok(entry1!.usdcDeposited.eq(new BN(4_986_666_666)));
 
-            // investor2: min(5e9, floor(20e6 * 50000 / 150000)) = 6_666_666
             const entry2 = await sdk.fetchInvestorRecord(investor2.publicKey);
             assert.ok(entry2!.usdcLockedCurrentRound.eq(new BN(6_666_666)));
             assert.ok(entry2!.usdcDeposited.eq(new BN(4_993_333_334)));
@@ -1588,8 +1586,8 @@ describe("floor-program", () => {
             // ---- verify RoundRecord created ----
             const rr = await sdk.fetchRoundRecord(round0);
             assert.equal(rr.roundIndex, 0n);
-            assert.equal(rr.walnPurchased, 199_999_990_000n);
-            assert.equal(rr.usdcSpent, 19_999_999n);
+            assert.equal(rr.walnPurchased, 200_000_000_000n);
+            assert.equal(rr.usdcSpent, 20_000_000n);
             assert.equal(rr.totalAatVolumeAtTrigger, 150000n);
             assert.equal(rr.participantCount, 2);
 
@@ -1602,7 +1600,7 @@ describe("floor-program", () => {
             // ---- verify RoundLockedWaln records ----
             const lw1 = await sdk.fetchInvestorAlloc(round0, investor1.publicKey);
             assert.ok(lw1!.investor.equals(investor1.publicKey));
-            assert.equal(lw1!.walnAmount, 133333330000n);
+            assert.equal(lw1!.walnAmount, 133333340000n);
             assert.equal(lw1!.claimed, false);
 
             const lw2 = await sdk.fetchInvestorAlloc(round0, investor2.publicKey);
@@ -1611,15 +1609,15 @@ describe("floor-program", () => {
             assert.equal(lw2!.claimed, false);
 
             const entry1 = await sdk.fetchInvestorRecord(investor1.publicKey);
-            assert.ok(entry1!.usdcLockedCurrentRound.eq(new BN(13_333_333)));
-            assert.ok(entry1!.usdcDeposited.eq(new BN(4_973_333_334)));
+            assert.ok(entry1!.usdcLockedCurrentRound.eq(new BN(13_333_334)));
+            assert.ok(entry1!.usdcDeposited.eq(new BN(4_973_333_332)));
 
             const entry2 = await sdk.fetchInvestorRecord(investor2.publicKey);
             assert.ok(entry2!.usdcLockedCurrentRound.eq(new BN(6_666_666)));
             assert.ok(entry2!.usdcDeposited.eq(new BN(4_986_666_668)));
 
-            assert.ok(entry1!.usdcCommitted.eq(new BN(13_333_333)));
-            assert.ok(entry1!.walnPurchasedTotal.eq(new BN("133333330000")));
+            assert.ok(entry1!.usdcCommitted.eq(new BN(13_333_334)));
+            assert.ok(entry1!.walnPurchasedTotal.eq(new BN("133333340000")));
             assert.ok(entry2!.usdcCommitted.eq(new BN(6_666_666)));
             assert.ok(entry2!.walnPurchasedTotal.eq(new BN("66666660000")));
         });
@@ -1651,7 +1649,7 @@ describe("floor-program", () => {
             );
 
             const walnAfter = await getTokenBalance(provider, investor1WalnAcc, TOKEN_2022_PROGRAM_ID);
-            assert.equal(walnAfter - walnBefore, 133_333_330_000n);
+            assert.equal(walnAfter - walnBefore, 133_333_340_000n);
 
             const lw = await sdk.fetchInvestorAlloc(round0, investor1.publicKey);
             assert.equal(lw!.claimed, true);
@@ -1769,8 +1767,8 @@ describe("floor-program", () => {
                 entry2!.usdcLockedCurrentRound.toNumber();
 
             assert.ok(
-                state.totalUsdcInLobby.eq(new BN(9_980_000_001)),
-                `expected totalUsdcInLobby=9980000001, got ${state.totalUsdcInLobby.toString()}`
+                state.totalUsdcInLobby.eq(new BN(9_980_000_000)),
+                `expected totalUsdcInLobby=9980000000, got ${state.totalUsdcInLobby.toString()}`
             );
             assert.equal(
                 state.totalUsdcInLobby.toNumber(),
@@ -2249,19 +2247,10 @@ describe("floor-program", () => {
             );
         });
 
-        it("investors receive dust bonus from previous round's carryover", async () => {
+        it("does not create carryover when the USDC rounding gap is absorbed", async () => {
             const stateBefore = await sdk.program.account.programState.fetch(contractState);
             const dustCarryover = BigInt(stateBefore.walnDustCarryover.toString());
-            const totalUsdcLocked = BigInt(stateBefore.totalUsdcLockedForRound.toString());
-            const floorPrice = BigInt(stateBefore.currentRoundFloorPrice.toString());
-            const walnScale = BigInt(WALN_UNIT);
-
-            assert.ok(dustCarryover > 0n, "dust carryover should be > 0 from previous rounds");
-
-            const entry1 = await sdk.fetchInvestorRecord(investor1.publicKey);
-            const entry2 = await sdk.fetchInvestorRecord(investor2.publicKey);
-            const locked1 = BigInt(entry1!.usdcLockedCurrentRound.toString());
-            const locked2 = BigInt(entry2!.usdcLockedCurrentRound.toString());
+            assert.equal(dustCarryover, 0n);
 
             const roundIndex = stateBefore.roundCount;
             const roundBn = new BN(roundIndex.toNumber());
@@ -2288,55 +2277,13 @@ describe("floor-program", () => {
                 [seller]
             );
 
-            const lw1 = await sdk.fetchInvestorAlloc(roundBn, investor1.publicKey);
-            const lw2 = await sdk.fetchInvestorAlloc(roundBn, investor2.publicKey);
-
-            const base1 = locked1 * walnScale / floorPrice;
-            const base2 = locked2 * walnScale / floorPrice;
-
-            const inv1GotDust = lw1!.walnAmount > base1;
-            const inv2GotDust = lw2!.walnAmount > base2;
-
-            assert.ok(
-                inv1GotDust !== inv2GotDust,
-                "exactly one investor should receive the dust bonus"
-            );
-
-            if (inv1GotDust) {
-                assert.equal(
-                    lw1!.walnAmount,
-                    base1 + dustCarryover,
-                    "dust winner (investor1) should receive base + full dust"
-                );
-                assert.equal(
-                    lw2!.walnAmount,
-                    base2,
-                    "investor2 should receive only base allocation"
-                );
-            } else {
-                assert.equal(
-                    lw2!.walnAmount,
-                    base2 + dustCarryover,
-                    "dust winner (investor2) should receive base + full dust"
-                );
-                assert.equal(
-                    lw1!.walnAmount,
-                    base1,
-                    "investor1 should receive only base allocation"
-                );
-            }
-
             const stateAfter = await sdk.program.account.programState.fetch(contractState);
             const rr = await sdk.fetchRoundRecord(roundBn);
-            const totalWalnPurchased = rr.walnPurchased;
             const newDust = BigInt(stateAfter.walnDustCarryover.toString());
             const walnInRound = BigInt(stateBefore.currentRoundSizeWaln.toString());
 
-            assert.equal(
-                totalWalnPurchased + newDust,
-                walnInRound + dustCarryover,
-                "dust invariant must hold for round with bonus distribution"
-            );
+            assert.equal(rr.walnPurchased, walnInRound);
+            assert.equal(newDust, 0n);
         });
     });
 

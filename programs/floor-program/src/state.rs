@@ -36,6 +36,8 @@ pub struct ProgramState {
     pub usdc_withdraw_lock_seconds: i64,
     pub current_round_floor_price: u64,
     pub current_round_size_waln: u64,
+    pub current_round_lock_period: i64,
+    pub current_round_usdc_spent: u64,
     pub total_aat_volume: u64,
     pub waln_dust_carryover: u64,
     pub total_usdc_locked_for_round: u64,

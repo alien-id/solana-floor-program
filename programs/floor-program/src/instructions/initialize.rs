@@ -77,6 +77,8 @@ pub fn handler(
     state.floor_price_usdc = floor_price_usdc;
     state.current_round_floor_price = floor_price_usdc;
     state.current_round_size_waln = round_size_waln;
+    state.current_round_lock_period = lock_period_seconds;
+    state.current_round_usdc_spent = 0;
     state.round_size_waln = round_size_waln;
     state.lock_period_seconds = lock_period_seconds;
     state.current_round_waln = 0;

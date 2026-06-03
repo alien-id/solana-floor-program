@@ -38,6 +38,31 @@ pub struct CloseRound<'info> {
     pub system_program: Program<'info, System>,
 }
 
+fn close_round_usdc_spent(
+    usdc_paid_for_round: u64,
+    locked: u64,
+    total_locked_usdc: u128,
+    remaining_usdc_remainder: &mut u64,
+) -> Result<u64> {
+    let mut usdc_spent = u64::try_from(
+        (usdc_paid_for_round as u128)
+            .checked_mul(locked as u128)
+            .ok_or(FloorError::ArithmeticOverflow)?
+            .checked_div(total_locked_usdc)
+            .ok_or(FloorError::ArithmeticOverflow)?,
+    )
+    .map_err(|_| FloorError::ArithmeticOverflow)?;
+    if *remaining_usdc_remainder > 0 && usdc_spent < locked {
+        usdc_spent = usdc_spent
+            .checked_add(1)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+        *remaining_usdc_remainder = remaining_usdc_remainder
+            .checked_sub(1)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+    }
+    Ok(usdc_spent)
+}
+
 /// Force-settles the current, partially-filled round.
 pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>) -> Result<()> {
     let round_index;
@@ -45,6 +70,7 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
     let waln_decimals;
     let lock_period;
     let waln_in_round;
+    let usdc_paid_for_round;
     {
         let state = ctx.accounts.contract_state.load()?;
         require!(state.round_started == 1, FloorError::InvalidParameter);
@@ -53,8 +79,9 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
         round_index = state.round_count;
         floor_price = state.current_round_floor_price;
         waln_decimals = state.waln_decimals;
-        lock_period = state.lock_period_seconds;
+        lock_period = state.current_round_lock_period;
         waln_in_round = state.current_round_waln;
+        usdc_paid_for_round = state.current_round_usdc_spent;
     }
 
     require!(
@@ -89,8 +116,9 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
         .checked_add(lock_period)
         .ok_or(FloorError::ArithmeticOverflow)?;
 
-    // First pass: total wALN entitlement (T) had the round filled completely.
     let mut total_full_waln: u128 = 0;
+    let mut total_locked_usdc: u128 = 0;
+    let mut eligible_count: usize = 0;
     {
         let pool = ctx.accounts.investor_pool.load()?;
         let count = pool.count as usize;
@@ -106,13 +134,49 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
             total_full_waln = total_full_waln
                 .checked_add(full_waln)
                 .ok_or(FloorError::ArithmeticOverflow)?;
+            total_locked_usdc = total_locked_usdc
+                .checked_add(record.usdc_locked_current_round as u128)
+                .ok_or(FloorError::ArithmeticOverflow)?;
+            eligible_count = eligible_count
+                .checked_add(1)
+                .ok_or(FloorError::ArithmeticOverflow)?;
         }
     }
     require!(total_full_waln > 0, FloorError::NoEligibleInvestors);
+    require!(usdc_paid_for_round > 0, FloorError::InvalidParameter);
+    require!(
+        (usdc_paid_for_round as u128) <= total_locked_usdc,
+        FloorError::ArithmeticOverflow
+    );
 
-    // wALN available for distribution = what sellers actually delivered,
-    // capped at the total entitlement.
-    let waln_available = (waln_in_round as u128).min(total_full_waln);
+    let mut total_base_usdc_spent: u64 = 0;
+    {
+        let pool = ctx.accounts.investor_pool.load()?;
+        let count = pool.count as usize;
+        for record in pool.investors[..count].iter() {
+            if record.usdc_locked_current_round == 0 {
+                continue;
+            }
+            let base_usdc_spent = u64::try_from(
+                (usdc_paid_for_round as u128)
+                    .checked_mul(record.usdc_locked_current_round as u128)
+                    .ok_or(FloorError::ArithmeticOverflow)?
+                    .checked_div(total_locked_usdc)
+                    .ok_or(FloorError::ArithmeticOverflow)?,
+            )
+            .map_err(|_| FloorError::ArithmeticOverflow)?;
+            total_base_usdc_spent = total_base_usdc_spent
+                .checked_add(base_usdc_spent)
+                .ok_or(FloorError::ArithmeticOverflow)?;
+        }
+    }
+
+    let waln_available = waln_in_round as u128;
+    let mut remaining_waln = waln_available;
+    let mut remaining_usdc_remainder = usdc_paid_for_round
+        .checked_sub(total_base_usdc_spent)
+        .ok_or(FloorError::ArithmeticOverflow)?;
+    let mut processed_eligible: usize = 0;
 
     let mut total_usdc_spent: u64 = 0;
     let mut total_waln_purchased: u64 = 0;
@@ -128,6 +192,10 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
                 continue;
             }
 
+            processed_eligible = processed_eligible
+                .checked_add(1)
+                .ok_or(FloorError::ArithmeticOverflow)?;
+
             let locked = record.usdc_locked_current_round;
             let full_waln = (locked as u128)
                 .checked_mul(waln_scale)
@@ -135,23 +203,29 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
                 .checked_div(floor_price as u128)
                 .ok_or(FloorError::ArithmeticOverflow)?;
 
-            let waln_alloc = u64::try_from(
-                waln_available
-                    .checked_mul(full_waln)
-                    .ok_or(FloorError::ArithmeticOverflow)?
-                    .checked_div(total_full_waln)
-                    .ok_or(FloorError::ArithmeticOverflow)?,
-            )
-            .map_err(|_| FloorError::ArithmeticOverflow)?;
+            let is_last_eligible = processed_eligible == eligible_count;
+            let waln_alloc = if is_last_eligible {
+                u64::try_from(remaining_waln).map_err(|_| FloorError::ArithmeticOverflow)?
+            } else {
+                u64::try_from(
+                    waln_available
+                        .checked_mul(full_waln)
+                        .ok_or(FloorError::ArithmeticOverflow)?
+                        .checked_div(total_full_waln)
+                        .ok_or(FloorError::ArithmeticOverflow)?,
+                )
+                .map_err(|_| FloorError::ArithmeticOverflow)?
+            };
+            remaining_waln = remaining_waln
+                .checked_sub(waln_alloc as u128)
+                .ok_or(FloorError::ArithmeticOverflow)?;
 
-            let usdc_spent = u64::try_from(
-                (waln_alloc as u128)
-                    .checked_mul(floor_price as u128)
-                    .ok_or(FloorError::ArithmeticOverflow)?
-                    .checked_div(waln_scale)
-                    .ok_or(FloorError::ArithmeticOverflow)?,
-            )
-            .map_err(|_| FloorError::ArithmeticOverflow)?;
+            let usdc_spent = close_round_usdc_spent(
+                usdc_paid_for_round,
+                locked,
+                total_locked_usdc,
+                &mut remaining_usdc_remainder,
+            )?;
 
             let refund = locked
                 .checked_sub(usdc_spent)
@@ -186,6 +260,9 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
             }
         }
     }
+
+    require!(remaining_usdc_remainder == 0, FloorError::ArithmeticOverflow);
+    require!(total_usdc_spent == usdc_paid_for_round, FloorError::ArithmeticOverflow);
 
     participant_data.sort_unstable_by(|a, b| a.0.to_bytes().cmp(&b.0.to_bytes()));
     let participant_count = participant_data.len() as u32;
@@ -328,16 +405,53 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
         .checked_add(1)
         .ok_or(FloorError::ArithmeticOverflow)?;
     state.current_round_waln = 0;
+    state.current_round_usdc_spent = 0;
     state.total_usdc_in_lobby = state
         .total_usdc_in_lobby
         .checked_sub(total_usdc_spent)
         .ok_or(FloorError::ArithmeticOverflow)?;
     state.total_usdc_locked_for_round = 0;
     state.round_started = 0;
+    // Forced close preserves existing carryover; only full-round settlement consumes prior dust.
     state.waln_dust_carryover = state
         .waln_dust_carryover
         .checked_add(new_dust)
         .ok_or(FloorError::ArithmeticOverflow)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn close_round_usdc_remainder_is_capped_by_locked_amount() {
+        let locks = [1u64; 100];
+        let usdc_paid_for_round = 99u64;
+        let total_locked_usdc = locks.iter().map(|v| *v as u128).sum::<u128>();
+        let total_base_usdc_spent = locks
+            .iter()
+            .map(|locked| {
+                ((usdc_paid_for_round as u128) * (*locked as u128) / total_locked_usdc) as u64
+            })
+            .sum::<u64>();
+        let mut remainder = usdc_paid_for_round - total_base_usdc_spent;
+        let mut total_spent = 0u64;
+
+        for locked in locks {
+            let spent = close_round_usdc_spent(
+                usdc_paid_for_round,
+                locked,
+                total_locked_usdc,
+                &mut remainder,
+            )
+            .unwrap();
+            assert!(spent <= locked);
+            total_spent += spent;
+        }
+
+        assert_eq!(remainder, 0);
+        assert_eq!(total_spent, usdc_paid_for_round);
+    }
 }
