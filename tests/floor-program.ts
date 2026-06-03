@@ -2148,7 +2148,7 @@ describe("floor-program", () => {
                 await provider.sendAndConfirm(
                     new Transaction().add(
                         await sdk.program.methods
-                            .claimWaln(round0, [0, 0, 0, 0])
+                            .claimWaln(round0)
                             .accounts({
                                 investor: investor1.publicKey,
                                 contractState,

@@ -100,17 +100,15 @@ pub mod floor_program {
     pub fn sell_waln<'info>(
         ctx: Context<'_, '_, 'info, 'info, SellWaln<'info>>,
         max_waln_amount: u64,
-        hook_bumps: [u8; 4],
     ) -> Result<()> {
-        sell_waln::handler(ctx, max_waln_amount, hook_bumps)
+        sell_waln::handler(ctx, max_waln_amount)
     }
 
     pub fn claim_waln<'info>(
         ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>,
         round_index: u64,
-        hook_bumps: [u8; 4],
     ) -> Result<()> {
-        claim_waln::handler(ctx, round_index, hook_bumps)
+        claim_waln::handler(ctx, round_index)
     }
 
     pub fn mint_aat_nft(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {

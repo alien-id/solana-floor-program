@@ -89,7 +89,6 @@ pub struct SellWaln<'info> {
 pub fn handler<'info>(
     ctx: Context<'_, '_, 'info, 'info, SellWaln<'info>>,
     max_waln_amount: u64,
-    hook_bumps: [u8; 4],
 ) -> Result<()> {
     let waln_decimals = ctx.accounts.waln_mint.decimals;
     let usdc_decimals = ctx.accounts.usdc_mint.decimals;
@@ -201,7 +200,6 @@ pub fn handler<'info>(
             &ctx.accounts.waln_mint.key(),
             &ctx.accounts.seller.key(),
             &hook_program_id,
-            hook_bumps,
         )?;
         hook_offset = 8;
     } else {
