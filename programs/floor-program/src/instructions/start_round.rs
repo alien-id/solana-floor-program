@@ -50,7 +50,7 @@ pub fn execute_round_start(
                 .ok_or(FloorError::ArithmeticOverflow)?
                 .checked_div(total_aat_volume as u128)
                 .ok_or(FloorError::ArithmeticOverflow)?;
-            if (record.usdc_deposited as u128) < required_lock {
+            if required_lock == 0 || (record.usdc_deposited as u128) < required_lock {
                 eligible[i] = false;
                 changed = true;
             }

@@ -9,6 +9,7 @@ import {
     sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import {
+    createBurnInstruction,
     createTransferInstruction,
     getAssociatedTokenAddressSync,
     TOKEN_2022_PROGRAM_ID,
@@ -575,7 +576,7 @@ describe("floor-program", () => {
             assert.ok(state.floorPriceUsdc.eq(FLOOR_PRICE));
             assert.ok(state.roundSizeWaln.eq(ROUND_SIZE));
             assert.ok(state.lockPeriodSeconds.eq(LOCK_PERIOD));
-            assert.equal(state.paused, 0);
+            assert.equal(state.sellPaused, 0);
             assert.equal(state.roundStarted, 0);
             assert.ok(state.roundCount.eqn(0));
         });
@@ -638,6 +639,36 @@ describe("floor-program", () => {
                     e.toString().includes("0x25") ||
                     e.toString().includes("custom program error"),
                     `expected non-transferable error, got: ${e.toString()}`
+                );
+            }
+        });
+
+        it("rejects burning investor1 AAT NFT (token account is frozen)", async () => {
+            const srcAta = sdk.investorAatAccount(investor1.publicKey, investor1NftPubkey);
+
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        createBurnInstruction(
+                            srcAta,
+                            investor1NftPubkey,
+                            investor1.publicKey,
+                            1,
+                            [],
+                            TOKEN_2022_PROGRAM_ID
+                        )
+                    ),
+                    [investor1]
+                );
+                assert.fail("burn should have been rejected");
+            } catch (e: any) {
+                // SPL Token AccountFrozen = error 17 (0x11)
+                assert.ok(
+                    e.toString().includes("frozen") ||
+                    e.toString().includes("Frozen") ||
+                    e.toString().includes("0x11") ||
+                    e.toString().includes("custom program error"),
+                    `expected account-frozen error, got: ${e.toString()}`
                 );
             }
         });
@@ -789,16 +820,30 @@ describe("floor-program", () => {
 
         it("set_paused pauses and unpauses", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
             let state = await sdk.program.account.programState.fetch(contractState);
-            assert.equal(state.paused, 1);
+            assert.equal(state.sellPaused, 1);
 
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
             );
             state = await sdk.program.account.programState.fetch(contractState);
-            assert.equal(state.paused, 0);
+            assert.equal(state.sellPaused, 0);
+        });
+
+        it("set_frozen freezes and unfreezes", async () => {
+            await provider.sendAndConfirm(
+                new Transaction().add(await sdk.admin(admin.publicKey).setFrozen(true))
+            );
+            let state = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(state.frozen, 1);
+
+            await provider.sendAndConfirm(
+                new Transaction().add(await sdk.admin(admin.publicKey).setFrozen(false))
+            );
+            state = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(state.frozen, 0);
         });
 
         it("fund treasury by admin", async () => {
@@ -807,6 +852,66 @@ describe("floor-program", () => {
                     await sdk.admin(admin.publicKey).fundTreasury(new BN(1_000_000_000))
                 )
             )
+        });
+
+        it("withdraw treasury by admin", async () => {
+            const [treasury] = sdk.treasuryPda();
+            const beforeTreasury = await provider.connection.getBalance(treasury);
+            const beforeAdmin = await provider.connection.getBalance(admin.publicKey);
+            const amount = new BN(500_000_000);
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.admin(admin.publicKey).withdrawTreasury(amount)
+                )
+            );
+
+            const afterTreasury = await provider.connection.getBalance(treasury);
+            const afterAdmin = await provider.connection.getBalance(admin.publicKey);
+            assert.equal(beforeTreasury - afterTreasury, amount.toNumber());
+            assert.ok(afterAdmin > beforeAdmin, "admin balance should increase (minus tx fee)");
+        });
+
+        it("withdraw_treasury rejects non-admin signer", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(investor1.publicKey).withdrawTreasury(new BN(1))
+                    ),
+                    [investor1]
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.include(e.toString(), "Unauthorized");
+            }
+        });
+
+        it("withdraw_treasury rejects zero amount", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(admin.publicKey).withdrawTreasury(new BN(0))
+                    )
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.include(e.toString(), "ZeroAmount");
+            }
+        });
+
+        it("withdraw_treasury fails when amount exceeds balance", async () => {
+            const [treasury] = sdk.treasuryPda();
+            const balance = await provider.connection.getBalance(treasury);
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(admin.publicKey).withdrawTreasury(new BN(balance + 1_000_000_000))
+                    )
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.include(e.toString(), "InsufficientFunds");
+            }
         });
 
         it("rejects non-admin signer", async () => {
@@ -1066,7 +1171,7 @@ describe("floor-program", () => {
 
         it("allows deposit when contract is paused", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
             try {
                 await provider.sendAndConfirm(
@@ -1083,7 +1188,7 @@ describe("floor-program", () => {
                 );
             } finally {
                 await provider.sendAndConfirm(
-                    new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                    new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
                 );
                 await provider.sendAndConfirm(
                     new Transaction().add(
@@ -1115,10 +1220,17 @@ describe("floor-program", () => {
                 );
                 assert.fail("should have thrown");
             } catch (e: any) {
+                // The investor has no AAT token account for the foreign NFT's
+                // mint, so the `associated_token` constraint rejects it
+                // (AccountNotInitialized) before the handler runs. If such an
+                // ATA did exist, the handler would reject with NoAatNft /
+                // InvalidAatNft instead.
                 assert.ok(
                     e.toString().includes("NoAatNft") ||
-                    e.toString().includes("InvalidAatNft"),
-                    `expected NoAatNft or InvalidAatNft, got: ${e.toString()}`
+                    e.toString().includes("InvalidAatNft") ||
+                    e.toString().includes("AccountNotInitialized") ||
+                    e.toString().includes("0xbc4"),
+                    `expected NoAatNft / InvalidAatNft / AccountNotInitialized, got: ${e.toString()}`
                 );
             }
         });
@@ -1170,7 +1282,7 @@ describe("floor-program", () => {
 
         it("allows withdrawal when contract is paused", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
             try {
                 await provider.sendAndConfirm(
@@ -1186,7 +1298,7 @@ describe("floor-program", () => {
                 );
             } finally {
                 await provider.sendAndConfirm(
-                    new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                    new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
                 );
                 await provider.sendAndConfirm(
                     new Transaction().add(
@@ -1511,7 +1623,7 @@ describe("floor-program", () => {
 
         it("rejects sell when contract is paused", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
 
             try {
@@ -1531,10 +1643,10 @@ describe("floor-program", () => {
                 );
                 assert.fail("should have thrown");
             } catch (e: any) {
-                assert.include(e.toString(), "ContractPaused");
+                assert.include(e.toString(), "SellPaused");
             } finally {
                 await provider.sendAndConfirm(
-                    new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                    new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
                 );
             }
         });
@@ -1629,6 +1741,45 @@ describe("floor-program", () => {
     // 7. claim_waln
     // ---------------------------------------------------------------------------
     describe("claim_waln", () => {
+        it("rejects claim with empty remaining_accounts when mint has a hook", async () => {
+            await sleep(500);
+            const round0 = new BN(0);
+
+            const before = await sdk.fetchInvestorAlloc(round0, investor1.publicKey);
+            assert.ok(before && !before.claimed, "investor1 round-0 must be unclaimed so the claim reaches the hook gate");
+
+            const [contractState] = sdk.contractStatePda();
+            const [walnVault] = sdk.walnVaultPda();
+            const [roundLockedWaln] = sdk.roundLockedWalnPda(round0);
+
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.program.methods
+                            .claimWaln(round0, [0, 0, 0, 0])
+                            .accounts({
+                                investor: investor1.publicKey,
+                                contractState,
+                                roundLockedWaln,
+                                walnMint,
+                                investorWalnAccount: investor1WalnAcc,
+                                walnVault,
+                                walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                            } as any)
+                            .remainingAccounts([]) // empty — hooked mint must reject at the floor gate
+                            .instruction()
+                    ),
+                    [investor1]
+                );
+                assert.fail("claim with empty remaining_accounts should have been rejected");
+            } catch (e: any) {
+                assert.include(e.toString(), "InvalidHookAccountsCount");
+            }
+
+            const after = await sdk.fetchInvestorAlloc(round0, investor1.publicKey);
+            assert.ok(after && !after.claimed, "alloc must stay unclaimed after the rejected claim");
+        });
+
         it("claims locked wALN after lock expires (lock_period=0)", async () => {
             // With lock_period = 0, unlock = triggered_at + 0 = triggered_at
             // The clock moves forward between slots, so this should pass immediately.
@@ -1657,9 +1808,9 @@ describe("floor-program", () => {
             assert.equal(lw!.claimed, true);
         });
 
-        it("allows claim attempt when contract is paused (fails for other reason, not ContractPaused)", async () => {
+        it("allows claim attempt when contract is paused (fails for other reason, not SellPaused)", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
             try {
                 await provider.sendAndConfirm(
@@ -1679,7 +1830,7 @@ describe("floor-program", () => {
                 assert.include(e.toString(), "AlreadyClaimed");
             } finally {
                 await provider.sendAndConfirm(
-                    new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                    new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
                 );
             }
         });

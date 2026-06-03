@@ -107,7 +107,8 @@ pub fn handler<'info>(
 
     {
         let state = ctx.accounts.contract_state.load()?;
-        require!(state.paused == 0, FloorError::ContractPaused);
+        require!(state.frozen == 0, FloorError::ContractFrozen);
+        require!(state.sell_paused == 0, FloorError::SellPaused);
         require!(max_waln_amount > 0, FloorError::ZeroAmount);
         require!(ctx.accounts.waln_mint.key() == state.waln_mint, FloorError::InvalidMint);
         require!(ctx.accounts.usdc_mint.key() == state.usdc_mint, FloorError::InvalidMint);
@@ -131,6 +132,19 @@ pub fn handler<'info>(
             .ok_or(FloorError::ArithmeticOverflow)?;
         waln_amount = max_waln_amount.min(remaining_in_round);
         require!(waln_amount > 0, FloorError::ZeroAmount);
+
+        let post_sale_remaining = remaining_in_round
+            .checked_sub(waln_amount)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+        if post_sale_remaining > 0 {
+            let local_waln_scale = 10_u128.pow(waln_decimals as u32);
+            let post_sale_usdc = (post_sale_remaining as u128)
+                .checked_mul(eff_floor_price as u128)
+                .ok_or(FloorError::ArithmeticOverflow)?
+                .checked_div(local_waln_scale)
+                .ok_or(FloorError::ArithmeticOverflow)?;
+            require!(post_sale_usdc > 0, FloorError::SellLeavesUnpayableDust);
+        }
 
         floor_price_usdc = eff_floor_price;
         current_round_size_waln = eff_round_size;
@@ -418,6 +432,7 @@ pub fn handler<'info>(
             let rw: &mut RoundLockedWaln =
                 bytemuck::from_bytes_mut(&mut data[8..]);
             rw.round_index = round_index;
+            rw.unlock = unlock_timestamp;
             rw.count = participant_count;
             rw.bump = round_locked_waln_bump;
             rw._pad = [0; 3];
@@ -425,7 +440,6 @@ pub fn handler<'info>(
                 rw.investors[i] = InvestorAlloc {
                     investor: *investor,
                     waln_amount: *waln_alloc,
-                    unlock: unlock_timestamp,
                     claimed: 0,
                     _pad: [0; 7],
                 };

@@ -2,8 +2,10 @@ use anchor_lang::prelude::*;
 
 #[error_code]
 pub enum FloorError {
-    #[msg("Contract is paused")]
-    ContractPaused,
+    #[msg("Selling is paused")]
+    SellPaused,
+    #[msg("Contract is frozen — all operations are halted")]
+    ContractFrozen,
     #[msg("Amount must be greater than zero")]
     ZeroAmount,
     #[msg("Insufficient funds available")]
@@ -50,4 +52,6 @@ pub enum FloorError {
     NoPendingAdmin,
     #[msg("USDC is still locked — withdrawal is not allowed before the unlock timestamp")]
     UsdcLocked,
+    #[msg("Sale would leave an unpayable WALN dust remainder; sell the full remaining round capacity instead")]
+    SellLeavesUnpayableDust,
 }

@@ -65,8 +65,12 @@ pub mod floor_program {
         admin::set_investor_usdc_unlock(ctx, investor, new_unlock_ts)
     }
 
-    pub fn set_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
-        admin::set_paused(ctx, paused)
+    pub fn set_sell_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
+        admin::set_sell_paused(ctx, paused)
+    }
+
+    pub fn set_frozen(ctx: Context<AdminOnly>, frozen: bool) -> Result<()> {
+        admin::set_frozen(ctx, frozen)
     }
 
     pub fn cancel_round(ctx: Context<CancelRound>) -> Result<()> {
@@ -75,6 +79,10 @@ pub mod floor_program {
 
     pub fn fund_treasury(ctx: Context<FundTreasury>, amount: u64) -> Result<()> {
         admin::fund_treasury(ctx, amount)
+    }
+
+    pub fn withdraw_treasury(ctx: Context<WithdrawTreasury>, amount: u64) -> Result<()> {
+        admin::withdraw_treasury(ctx, amount)
     }
 
     pub fn deposit_usdc(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {

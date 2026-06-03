@@ -6,7 +6,6 @@ pub const MAX_INVESTORS: usize = 100;
 pub struct InvestorAlloc {
     pub investor: Pubkey,
     pub waln_amount: u64,
-    pub unlock: i64,
     pub claimed: u8,
     pub _pad: [u8; 7],
 }
@@ -14,6 +13,7 @@ pub struct InvestorAlloc {
 #[account(zero_copy)]
 pub struct RoundLockedWaln {
     pub round_index: u64,
+    pub unlock: i64,
     pub count: u32,
     pub bump: u8,
     pub _pad: [u8; 3],
@@ -40,19 +40,15 @@ pub struct ProgramState {
     pub waln_dust_carryover: u64,
     pub total_usdc_locked_for_round: u64,
     pub pending_admin: Pubkey,
-    pub paused: u8,
+    pub sell_paused: u8,
     pub round_started: u8,
     pub bump: u8,
     pub usdc_vault_bump: u8,
     pub waln_vault_bump: u8,
     pub waln_decimals: u8,
     pub usdc_decimals: u8,
-    pub _padding: [u8; 1],
+    pub frozen: u8,
 }
-
-
-#[account]
-pub struct AatNftAuthority {}
 
 #[zero_copy]
 pub struct InvestorRecord {

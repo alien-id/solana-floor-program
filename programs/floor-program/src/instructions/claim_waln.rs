@@ -59,6 +59,7 @@ pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _rou
     let waln_mint_key;
     {
         let state = ctx.accounts.contract_state.load()?;
+        require!(state.frozen == 0, FloorError::ContractFrozen);
         state_bump = state.bump;
         waln_mint_key = state.waln_mint;
     }
@@ -70,6 +71,7 @@ pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _rou
     {
         let mut round_locked_waln = ctx.accounts.round_locked_waln.load_mut()?;
         let count = round_locked_waln.count as usize;
+        let unlock_ts = round_locked_waln.unlock;
 
         let idx = round_locked_waln.investors[..count]
             .binary_search_by_key(&investor_key.to_bytes(), |a| a.investor.to_bytes())
@@ -81,7 +83,7 @@ pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _rou
 
         let clock = Clock::get()?;
         require!(
-            clock.unix_timestamp >= alloc.unlock,
+            clock.unix_timestamp >= unlock_ts,
             FloorError::NotYetUnlocked
         );
 
@@ -92,8 +94,7 @@ pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _rou
     let seeds: &[&[u8]] = &[CONTRACT_STATE_SEED, &[state_bump]];
     let signer = &[seeds];
 
-    if !ctx.remaining_accounts.is_empty() {
-        let hook_program_id = get_hook_program_id(&ctx.accounts.waln_mint.to_account_info())?;
+    if let Ok(hook_program_id) = get_hook_program_id(&ctx.accounts.waln_mint.to_account_info()) {
         validate_hook_accounts(
             ctx.remaining_accounts,
             &ctx.accounts.waln_mint.key(),
