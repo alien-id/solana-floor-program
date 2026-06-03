@@ -20,8 +20,6 @@ pub enum FloorError {
     InvalidInvestor,
     #[msg("No eligible investors with valid AAT NFTs and USDC deposited")]
     NoEligibleInvestors,
-    #[msg("Investor does not hold a valid AAT NFT from the configured collection")]
-    NoAatNft,
     #[msg("Core Asset fails verification (wrong collection, missing attribute, or invalid format)")]
     InvalidAatNft,
     #[msg("Invalid remaining accounts layout")]
@@ -38,8 +36,6 @@ pub enum FloorError {
     WalnAllocationLimitExceeded,
     #[msg("Investor pool is full")]
     InvestorPoolFull,
-    #[msg("Investors have insufficient deposits to cover the full round size")]
-    InsufficientDepositsForRound,
     #[msg("Invalid hook accounts count")]
     InvalidHookAccountsCount,
     #[msg("Invalid hook accounts")]
