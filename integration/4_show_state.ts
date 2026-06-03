@@ -30,7 +30,7 @@ async function main() {
     floorPriceUsdc: state.floorPriceUsdc.toString(),
     roundSizeWaln: state.roundSizeWaln.toString(),
     lockPeriodSeconds: state.lockPeriodSeconds.toString(),
-    paused: state.paused,
+    sellPaused: state.sellPaused,
     roundStarted: state.roundStarted,
     roundCount: state.roundCount.toString(),
     currentRoundWaln: state.currentRoundWaln.toString(),

@@ -81,10 +81,12 @@ pub fn handler(
     state.current_round_size_waln = round_size_waln;
     state.round_size_waln = round_size_waln;
     state.lock_period_seconds = lock_period_seconds;
+    state.current_round_lock_period = lock_period_seconds;
     state.current_round_waln = 0;
     state.total_usdc_in_lobby = 0;
     state.round_count = 0;
-    state.paused = 0;
+    state.sell_paused = 0;
+    state.frozen = 0;
     state.round_started = 0;
     state.bump = ctx.bumps.contract_state;
     state.usdc_vault_bump = ctx.bumps.usdc_vault;
