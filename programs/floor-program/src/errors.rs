@@ -6,8 +6,6 @@ pub enum FloorError {
     SellPaused,
     #[msg("Contract is frozen — all operations are halted")]
     ContractFrozen,
-    #[msg("Sell amount exceeds remaining round capacity; split into smaller sells")]
-    SellAmountExceedsRound,
     #[msg("Amount must be greater than zero")]
     ZeroAmount,
     #[msg("Insufficient funds available")]

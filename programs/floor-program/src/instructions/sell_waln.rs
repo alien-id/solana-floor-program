@@ -88,7 +88,7 @@ pub struct SellWaln<'info> {
 
 pub fn handler<'info>(
     ctx: Context<'_, '_, 'info, 'info, SellWaln<'info>>,
-    waln_amount: u64,
+    max_waln_amount: u64,
     hook_bumps: [u8; 4],
 ) -> Result<()> {
     let waln_decimals = ctx.accounts.waln_mint.decimals;
@@ -103,12 +103,13 @@ pub fn handler<'info>(
     let need_round_start;
     let snapshot_price;
     let snapshot_size;
+    let waln_amount;
 
     {
         let state = ctx.accounts.contract_state.load()?;
         require!(state.frozen == 0, FloorError::ContractFrozen);
         require!(state.sell_paused == 0, FloorError::SellPaused);
-        require!(waln_amount > 0, FloorError::ZeroAmount);
+        require!(max_waln_amount > 0, FloorError::ZeroAmount);
         require!(ctx.accounts.waln_mint.key() == state.waln_mint, FloorError::InvalidMint);
         require!(ctx.accounts.usdc_mint.key() == state.usdc_mint, FloorError::InvalidMint);
 
@@ -129,7 +130,8 @@ pub fn handler<'info>(
         let remaining_in_round = eff_round_size
             .checked_sub(eff_round_waln)
             .ok_or(FloorError::ArithmeticOverflow)?;
-        require!(waln_amount <= remaining_in_round, FloorError::SellAmountExceedsRound);
+        waln_amount = max_waln_amount.min(remaining_in_round);
+        require!(waln_amount > 0, FloorError::ZeroAmount);
 
         let post_sale_remaining = remaining_in_round
             .checked_sub(waln_amount)
@@ -426,7 +428,7 @@ pub fn handler<'info>(
 
         {
             let mut data = round_locked_waln_info.try_borrow_mut_data()?;
-            data[..8].copy_from_slice(&RoundLockedWaln::DISCRIMINATOR);
+            data[..8].copy_from_slice(RoundLockedWaln::DISCRIMINATOR);
             let rw: &mut RoundLockedWaln =
                 bytemuck::from_bytes_mut(&mut data[8..]);
             rw.round_index = round_index;
@@ -489,7 +491,7 @@ pub fn handler<'info>(
 
         {
             let mut rr_data = round_record_info.try_borrow_mut_data()?;
-            rr_data[..8].copy_from_slice(&RoundRecord::DISCRIMINATOR);
+            rr_data[..8].copy_from_slice(RoundRecord::DISCRIMINATOR);
             let record = RoundRecord {
                 round_index,
                 triggered_at: clock.unix_timestamp,
