@@ -40,8 +40,6 @@ pub enum FloorError {
     WalnAllocationLimitExceeded,
     #[msg("Investor pool is full")]
     InvestorPoolFull,
-    #[msg("Investors have insufficient deposits to cover the full round size")]
-    InsufficientDepositsForRound,
     #[msg("Invalid hook accounts count")]
     InvalidHookAccountsCount,
     #[msg("Invalid hook accounts")]
