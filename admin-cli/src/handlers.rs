@@ -1,7 +1,7 @@
 use crate::utils::{
     get_aat_nft_mint_address, get_contract_state_address, get_investor_pool_address,
-    get_nft_authority_address, get_treasury_address, get_usdc_vault_address,
-    get_waln_vault_address,
+    get_nft_authority_address, get_program_data_address, get_treasury_address,
+    get_usdc_vault_address, get_waln_vault_address,
 };
 use anchor_client::{
     solana_sdk::pubkey::Pubkey,
@@ -176,6 +176,7 @@ pub fn handle_initialize(
     let (usdc_vault, _) = get_usdc_vault_address(&program_id);
     let (waln_vault, _) = get_waln_vault_address(&program_id);
     let (investor_pool, _) = get_investor_pool_address(&program_id);
+    let (program_data, _) = get_program_data_address(&program_id);
 
     println!("Initializing floor program...");
     println!("  USDC Mint:        {}", usdc_mint);
@@ -197,6 +198,8 @@ pub fn handle_initialize(
             system_program: system_program::ID,
             usdc_token_program: anchor_spl::token::ID,
             waln_token_program: anchor_spl::token_2022::ID,
+            program: program_id,
+            program_data,
         })
         .args(floor_program::instruction::Initialize {
             floor_price_usdc,

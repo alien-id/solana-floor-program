@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
+use crate::errors::FloorError;
 use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, USDC_VAULT_SEED, WALN_VAULT_SEED};
 use crate::state::{InvestorPool, ProgramState};
 
@@ -56,6 +57,12 @@ pub struct Initialize<'info> {
     pub usdc_token_program: Interface<'info, TokenInterface>,
     #[account(address = anchor_spl::token_2022::ID)]
     pub waln_token_program: Interface<'info, TokenInterface>,
+
+    #[account(constraint = program.programdata_address()? == Some(program_data.key()) @ FloorError::Unauthorized)]
+    pub program: Program<'info, crate::program::FloorProgram>,
+
+    #[account(constraint = program_data.upgrade_authority_address == Some(admin.key()) @ FloorError::Unauthorized)]
+    pub program_data: Account<'info, ProgramData>,
 }
 
 pub fn handler(

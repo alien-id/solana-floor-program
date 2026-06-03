@@ -33,6 +33,10 @@ const TOKEN_2022_PROGRAM_ID = new PublicKey(
   "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 );
 
+const BPF_LOADER_UPGRADEABLE_PROGRAM_ID = new PublicKey(
+  "BPFLoaderUpgradeab1e11111111111111111111111"
+);
+
 export class FloorSdk {
   readonly provider: AnchorProvider;
   readonly program: Program<FloorProgram>;
@@ -83,6 +87,14 @@ export class FloorSdk {
     return PublicKey.findProgramAddressSync(
       [Buffer.from("investor_pool")],
       this.programId
+    );
+  }
+
+  /** Program data account (BPF Upgradeable Loader) holding the upgrade authority. */
+  programDataPda(): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync(
+      [this.programId.toBuffer()],
+      BPF_LOADER_UPGRADEABLE_PROGRAM_ID
     );
   }
 
@@ -165,6 +177,7 @@ export class FloorSdk {
     const [usdcVault] = this.usdcVaultPda();
     const [walnVault] = this.walnVaultPda();
     const [investorPool] = this.investorPoolPda();
+    const [programData] = this.programDataPda();
 
     return this.program.methods
       .initialize(args.floorPriceUsdc, args.roundSizeWaln, args.lockPeriodSeconds)
@@ -179,6 +192,8 @@ export class FloorSdk {
         systemProgram: SystemProgram.programId,
         usdcTokenProgram: args.usdcTokenProgram ?? TOKEN_PROGRAM_ID,
         walnTokenProgram: args.walnTokenProgram ?? TOKEN_PROGRAM_ID,
+        program: this.programId,
+        programData,
       } as any)
       .instruction();
   }
