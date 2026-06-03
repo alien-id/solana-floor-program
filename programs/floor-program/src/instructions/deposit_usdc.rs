@@ -145,9 +145,10 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
 
     if usdc_withdraw_lock_seconds > 0 {
         let now = Clock::get()?.unix_timestamp;
-        record.usdc_unlock_ts = now
+        let new_unlock_ts = now
             .checked_add(usdc_withdraw_lock_seconds)
             .ok_or(FloorError::ArithmeticOverflow)?;
+        record.usdc_unlock_ts = record.usdc_unlock_ts.max(new_unlock_ts);
     }
 
     let mut state = ctx.accounts.contract_state.load_mut()?;
