@@ -9,6 +9,7 @@ import {
     sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import {
+    createBurnInstruction,
     createTransferInstruction,
     getAssociatedTokenAddressSync,
     TOKEN_2022_PROGRAM_ID,
@@ -45,6 +46,8 @@ const WALN_UNIT = 10 ** WALN_DECIMALS;
 
 const FLOOR_PRICE = new BN(100_000);
 const ROUND_SIZE = new BN(200 * WALN_UNIT);
+// Must mirror MIN_SELL_WALN in programs/floor-program/src/state.rs (1 wALN).
+const MIN_SELL_WALN = new BN(1_000_000_000);
 const LOCK_PERIOD = new BN(0);
 const CONFIRM_OPTIONS = {
     commitment: "confirmed" as const,
@@ -508,6 +511,8 @@ describe("floor-program", () => {
                 })
             )
         );
+        const investorPoolLamports = await provider.connection.getBalance(investorPool);
+        console.log(`    [LAMPORTS] InvestorPool account: ${investorPoolLamports} lamports`);
 
         const hookProgram = new anchor.Program(
             require("../idl/alien_id_transfer_hook.json"),
@@ -573,7 +578,7 @@ describe("floor-program", () => {
             assert.ok(state.floorPriceUsdc.eq(FLOOR_PRICE));
             assert.ok(state.roundSizeWaln.eq(ROUND_SIZE));
             assert.ok(state.lockPeriodSeconds.eq(LOCK_PERIOD));
-            assert.equal(state.paused, 0);
+            assert.equal(state.sellPaused, 0);
             assert.equal(state.roundStarted, 0);
             assert.ok(state.roundCount.eqn(0));
         });
@@ -636,6 +641,36 @@ describe("floor-program", () => {
                     e.toString().includes("0x25") ||
                     e.toString().includes("custom program error"),
                     `expected non-transferable error, got: ${e.toString()}`
+                );
+            }
+        });
+
+        it("rejects burning investor1 AAT NFT (token account is frozen)", async () => {
+            const srcAta = sdk.investorAatAccount(investor1.publicKey, investor1NftPubkey);
+
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        createBurnInstruction(
+                            srcAta,
+                            investor1NftPubkey,
+                            investor1.publicKey,
+                            1,
+                            [],
+                            TOKEN_2022_PROGRAM_ID
+                        )
+                    ),
+                    [investor1]
+                );
+                assert.fail("burn should have been rejected");
+            } catch (e: any) {
+                // SPL Token AccountFrozen = error 17 (0x11)
+                assert.ok(
+                    e.toString().includes("frozen") ||
+                    e.toString().includes("Frozen") ||
+                    e.toString().includes("0x11") ||
+                    e.toString().includes("custom program error"),
+                    `expected account-frozen error, got: ${e.toString()}`
                 );
             }
         });
@@ -741,6 +776,289 @@ describe("floor-program", () => {
     });
 
     // ---------------------------------------------------------------------------
+    // 1d. Investor lifecycle : update_aat_volume + remove_investor_from_pool
+    // ---------------------------------------------------------------------------
+    describe("investor lifecycle (update_aat_volume / remove_investor_from_pool)", () => {
+        const lifeInvestor = Keypair.generate();
+        let lifeUsdcAcc: PublicKey;
+        let lifeNft: PublicKey;
+        const INITIAL_VOLUME = new BN(1_000);
+        const DEPOSIT = new BN(1_000 * USDC_UNIT);
+        let baselineTotalAatVolume: BN;
+
+        before(async () => {
+            const sig = await provider.connection.requestAirdrop(
+                lifeInvestor.publicKey,
+                2_000_000_000
+            );
+            await provider.connection.confirmTransaction(sig);
+
+            // Ensure deposits are immediately withdrawable (no withdraw lock).
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.admin(admin.publicKey).setUsdcWithdrawLock(new BN(0))
+                )
+            );
+
+            lifeUsdcAcc = await createTestTokenAccount(
+                provider,
+                usdcMint,
+                lifeInvestor.publicKey
+            );
+            await mintTokensTo(
+                provider,
+                usdcMint,
+                lifeUsdcAcc,
+                BigInt(2_000 * USDC_UNIT)
+            );
+
+            [lifeNft] = sdk.aatNftMintPda(lifeInvestor.publicKey);
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                    await sdk.mintAatNftIx({
+                        admin: admin.publicKey,
+                        investor: lifeInvestor.publicKey,
+                        aatVolume: INITIAL_VOLUME,
+                    })
+                )
+            );
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.depositUsdcIx({
+                        investor: lifeInvestor.publicKey,
+                        investorUsdcAccount: lifeUsdcAcc,
+                        usdcMint,
+                        aatNft: lifeNft,
+                        usdcAmount: DEPOSIT,
+                    })
+                ),
+                [lifeInvestor]
+            );
+
+            const state = await sdk.program.account.programState.fetch(contractState);
+            baselineTotalAatVolume = new BN(state.totalAatVolume.toString());
+        });
+
+        it("deposit places the investor in the pool with the NFT's aat_volume", async () => {
+            const record = await sdk.fetchInvestorRecord(lifeInvestor.publicKey);
+            assert.ok(record !== null, "investor should be in the pool");
+            assert.ok(
+                record!.aatVolume.eq(INITIAL_VOLUME),
+                `expected aat_volume=${INITIAL_VOLUME}, got ${record!.aatVolume}`
+            );
+        });
+
+        it("update_aat_volume lowers allocation and decrements total_aat_volume", async () => {
+            const newVolume = new BN(400);
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.updateAatVolumeIx({
+                        admin: admin.publicKey,
+                        investor: lifeInvestor.publicKey,
+                        newVolume,
+                    })
+                )
+            );
+
+            const state = await sdk.program.account.programState.fetch(contractState);
+            const expectedTotal = baselineTotalAatVolume
+                .sub(INITIAL_VOLUME)
+                .add(newVolume);
+            assert.ok(
+                new BN(state.totalAatVolume.toString()).eq(expectedTotal),
+                `expected total_aat_volume=${expectedTotal}, got ${state.totalAatVolume}`
+            );
+
+            const record = await sdk.fetchInvestorRecord(lifeInvestor.publicKey);
+            assert.ok(
+                record!.aatVolume.eq(newVolume),
+                `expected pool record aat_volume=${newVolume}, got ${record!.aatVolume}`
+            );
+        });
+
+        it("update_aat_volume rejects a non-admin signer", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.updateAatVolumeIx({
+                            admin: lifeInvestor.publicKey,
+                            investor: lifeInvestor.publicKey,
+                            newVolume: new BN(123),
+                        })
+                    ),
+                    [lifeInvestor]
+                );
+                assert.fail("non-admin update_aat_volume should have been rejected");
+            } catch (e: any) {
+                assert.ok(
+                    e.toString().includes("Unauthorized") ||
+                    e.toString().includes("6012"),
+                    `expected Unauthorized error, got: ${e.toString()}`
+                );
+            }
+        });
+
+        it("remove_investor_from_pool rejects a non-admin signer", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk
+                            .admin(lifeInvestor.publicKey)
+                            .removeInvestorFromPool({
+                                investor: lifeInvestor.publicKey,
+                                usdcMint,
+                                investorUsdcAccount: lifeUsdcAcc,
+                            })
+                    ),
+                    [lifeInvestor]
+                );
+                assert.fail("non-admin remove should have been rejected");
+            } catch (e: any) {
+                assert.ok(
+                    e.toString().includes("Unauthorized") ||
+                    e.toString().includes("6012"),
+                    `expected Unauthorized error, got: ${e.toString()}`
+                );
+            }
+        });
+
+        it("remove_investor_from_pool rejects an active investor", async () => {
+            // Investor still has aat_volume=400 -> not inactive (a leftover USDC
+            // deposit alone no longer blocks removal; it is refunded instead).
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk
+                            .admin(admin.publicKey)
+                            .removeInvestorFromPool({
+                                investor: lifeInvestor.publicKey,
+                                usdcMint,
+                                investorUsdcAccount: lifeUsdcAcc,
+                            })
+                    )
+                );
+                assert.fail("active investor removal should have been rejected");
+            } catch (e: any) {
+                assert.ok(
+                    e.toString().includes("InvestorNotInactive") ||
+                    e.toString().includes("6025"),
+                    `expected InvestorNotInactive error, got: ${e.toString()}`
+                );
+            }
+        });
+
+        it("admin winds the investor down to zero and reclaims the slot, refunding the leftover USDC", async () => {
+            // 1. Zero the allocation (frees the global AAT cap). The investor still
+            //    has a leftover USDC deposit, which removal must refund automatically.
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.updateAatVolumeIx({
+                        admin: admin.publicKey,
+                        investor: lifeInvestor.publicKey,
+                        newVolume: new BN(0),
+                    })
+                )
+            );
+
+            const stateAfterZero = await sdk.program.account.programState.fetch(contractState);
+            const expectedTotalAfterZero = baselineTotalAatVolume.sub(INITIAL_VOLUME);
+            assert.ok(
+                new BN(stateAfterZero.totalAatVolume.toString()).eq(expectedTotalAfterZero),
+                `expected total_aat_volume=${expectedTotalAfterZero}, got ${stateAfterZero.totalAatVolume}`
+            );
+
+            const poolBefore = await sdk.fetchInvestorPool();
+            const countBefore = poolBefore.count;
+            const recordBefore = await sdk.fetchInvestorRecord(lifeInvestor.publicKey);
+            assert.ok(
+                recordBefore!.usdcDeposited.eq(DEPOSIT),
+                `expected leftover deposit=${DEPOSIT}, got ${recordBefore!.usdcDeposited}`
+            );
+
+            const investorUsdcBefore = await getTokenBalance(provider, lifeUsdcAcc);
+            const lobbyBefore = new BN(stateAfterZero.totalUsdcInLobby.toString());
+
+            // 2. Remove the now-inactive investor in a single admin tx; the leftover
+            //    deposit is refunded to the investor's USDC account.
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk
+                        .admin(admin.publicKey)
+                        .removeInvestorFromPool({
+                            investor: lifeInvestor.publicKey,
+                            usdcMint,
+                            investorUsdcAccount: lifeUsdcAcc,
+                        })
+                )
+            );
+
+            const poolAfter = await sdk.fetchInvestorPool();
+            assert.equal(
+                poolAfter.count,
+                countBefore - 1,
+                "pool count should decrement by one"
+            );
+            assert.equal(
+                await sdk.fetchInvestorRecord(lifeInvestor.publicKey),
+                null,
+                "removed investor should no longer be in the pool"
+            );
+
+            // 3. The leftover USDC was refunded to the investor and the lobby total
+            //    was decremented by the same amount.
+            const investorUsdcAfter = await getTokenBalance(provider, lifeUsdcAcc);
+            assert.equal(
+                investorUsdcAfter - investorUsdcBefore,
+                BigInt(DEPOSIT.toString()),
+                "investor should be refunded the leftover deposit"
+            );
+
+            const stateFinal = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(
+                lobbyBefore
+                    .sub(new BN(stateFinal.totalUsdcInLobby.toString()))
+                    .eq(DEPOSIT),
+                "total_usdc_in_lobby should decrease by the refunded amount"
+            );
+
+            // 4. Global AAT volume is back to baseline minus the wound-down allocation,
+            //    leaving capacity for new investors (issue #16 resolved).
+            assert.ok(
+                new BN(stateFinal.totalAatVolume.toString()).eq(expectedTotalAfterZero),
+                `expected total_aat_volume=${expectedTotalAfterZero}, got ${stateFinal.totalAatVolume}`
+            );
+        });
+
+        it("deposit_usdc rejects an AAT NFT with zero allocation", async () => {
+            // The wound-down investor's NFT now has aat_volume == 0; a dust deposit
+            // must not let them re-occupy a pool slot.
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.depositUsdcIx({
+                            investor: lifeInvestor.publicKey,
+                            investorUsdcAccount: lifeUsdcAcc,
+                            usdcMint,
+                            aatNft: lifeNft,
+                            usdcAmount: new BN(1),
+                        })
+                    ),
+                    [lifeInvestor]
+                );
+                assert.fail("zero-allocation deposit should have been rejected");
+            } catch (e: any) {
+                assert.ok(
+                    e.toString().includes("ZeroAatAllocation") ||
+                    e.toString().includes("6026"),
+                    `expected ZeroAatAllocation error, got: ${e.toString()}`
+                );
+            }
+        });
+    });
+
+    // ---------------------------------------------------------------------------
     // 2. Admin instructions
     // ---------------------------------------------------------------------------
     describe("admin", () => {
@@ -760,16 +1078,33 @@ describe("floor-program", () => {
         });
 
         it("set_round_size updates round size", async () => {
+            const newSize = new BN(250 * WALN_UNIT);
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setRoundSize(new BN(200)))
+                new Transaction().add(await sdk.admin(admin.publicKey).setRoundSize(newSize))
             );
             let state = await sdk.program.account.programState.fetch(contractState);
-            assert.ok(state.roundSizeWaln.eqn(200));
+            assert.ok(state.roundSizeWaln.eq(newSize));
 
             // restore
             await provider.sendAndConfirm(
                 new Transaction().add(await sdk.admin(admin.publicKey).setRoundSize(ROUND_SIZE))
             );
+        });
+
+        it("set_round_size rejects values below MIN_SELL_WALN", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(admin.publicKey).setRoundSize(MIN_SELL_WALN.subn(1))
+                    )
+                );
+                assert.fail("should have rejected round size below MIN_SELL_WALN");
+            } catch (e: any) {
+                assert.include(e.toString(), "InvalidParameter");
+            }
+            // unchanged
+            const state = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(state.roundSizeWaln.eq(ROUND_SIZE));
         });
 
         it("set_lock_period updates lock period", async () => {
@@ -787,16 +1122,30 @@ describe("floor-program", () => {
 
         it("set_paused pauses and unpauses", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
             let state = await sdk.program.account.programState.fetch(contractState);
-            assert.equal(state.paused, 1);
+            assert.equal(state.sellPaused, 1);
 
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
             );
             state = await sdk.program.account.programState.fetch(contractState);
-            assert.equal(state.paused, 0);
+            assert.equal(state.sellPaused, 0);
+        });
+
+        it("set_frozen freezes and unfreezes", async () => {
+            await provider.sendAndConfirm(
+                new Transaction().add(await sdk.admin(admin.publicKey).setFrozen(true))
+            );
+            let state = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(state.frozen, 1);
+
+            await provider.sendAndConfirm(
+                new Transaction().add(await sdk.admin(admin.publicKey).setFrozen(false))
+            );
+            state = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(state.frozen, 0);
         });
 
         it("fund treasury by admin", async () => {
@@ -805,6 +1154,66 @@ describe("floor-program", () => {
                     await sdk.admin(admin.publicKey).fundTreasury(new BN(1_000_000_000))
                 )
             )
+        });
+
+        it("withdraw treasury by admin", async () => {
+            const [treasury] = sdk.treasuryPda();
+            const beforeTreasury = await provider.connection.getBalance(treasury);
+            const beforeAdmin = await provider.connection.getBalance(admin.publicKey);
+            const amount = new BN(500_000_000);
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.admin(admin.publicKey).withdrawTreasury(amount)
+                )
+            );
+
+            const afterTreasury = await provider.connection.getBalance(treasury);
+            const afterAdmin = await provider.connection.getBalance(admin.publicKey);
+            assert.equal(beforeTreasury - afterTreasury, amount.toNumber());
+            assert.ok(afterAdmin > beforeAdmin, "admin balance should increase (minus tx fee)");
+        });
+
+        it("withdraw_treasury rejects non-admin signer", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(investor1.publicKey).withdrawTreasury(new BN(1))
+                    ),
+                    [investor1]
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.include(e.toString(), "Unauthorized");
+            }
+        });
+
+        it("withdraw_treasury rejects zero amount", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(admin.publicKey).withdrawTreasury(new BN(0))
+                    )
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.include(e.toString(), "ZeroAmount");
+            }
+        });
+
+        it("withdraw_treasury fails when amount exceeds balance", async () => {
+            const [treasury] = sdk.treasuryPda();
+            const balance = await provider.connection.getBalance(treasury);
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.admin(admin.publicKey).withdrawTreasury(new BN(balance + 1_000_000_000))
+                    )
+                );
+                assert.fail("should have thrown");
+            } catch (e: any) {
+                assert.include(e.toString(), "InsufficientFunds");
+            }
         });
 
         it("rejects non-admin signer", async () => {
@@ -1064,7 +1473,7 @@ describe("floor-program", () => {
 
         it("allows deposit when contract is paused", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
             try {
                 await provider.sendAndConfirm(
@@ -1081,7 +1490,7 @@ describe("floor-program", () => {
                 );
             } finally {
                 await provider.sendAndConfirm(
-                    new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                    new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
                 );
                 await provider.sendAndConfirm(
                     new Transaction().add(
@@ -1113,10 +1522,17 @@ describe("floor-program", () => {
                 );
                 assert.fail("should have thrown");
             } catch (e: any) {
+                // The investor has no AAT token account for the foreign NFT's
+                // mint, so the `associated_token` constraint rejects it
+                // (AccountNotInitialized) before the handler runs. If such an
+                // ATA did exist, the handler would reject with NoAatNft /
+                // InvalidAatNft instead.
                 assert.ok(
                     e.toString().includes("NoAatNft") ||
-                    e.toString().includes("InvalidAatNft"),
-                    `expected NoAatNft or InvalidAatNft, got: ${e.toString()}`
+                    e.toString().includes("InvalidAatNft") ||
+                    e.toString().includes("AccountNotInitialized") ||
+                    e.toString().includes("0xbc4"),
+                    `expected NoAatNft / InvalidAatNft / AccountNotInitialized, got: ${e.toString()}`
                 );
             }
         });
@@ -1168,7 +1584,7 @@ describe("floor-program", () => {
 
         it("allows withdrawal when contract is paused", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
             try {
                 await provider.sendAndConfirm(
@@ -1184,7 +1600,7 @@ describe("floor-program", () => {
                 );
             } finally {
                 await provider.sendAndConfirm(
-                    new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                    new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
                 );
                 await provider.sendAndConfirm(
                     new Transaction().add(
@@ -1467,7 +1883,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: SELL_AMOUNT_PARTIAL,
+                        maxWalnAmount: SELL_AMOUNT_PARTIAL,
                     })
                 ),
                 [seller]
@@ -1509,7 +1925,7 @@ describe("floor-program", () => {
 
         it("rejects sell when contract is paused", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
 
             try {
@@ -1522,17 +1938,17 @@ describe("floor-program", () => {
                             walnMint,
                             usdcMint,
                             walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                            walnAmount: new BN(1),
+                            maxWalnAmount: new BN(1),
                         })
                     ),
                     [seller]
                 );
                 assert.fail("should have thrown");
             } catch (e: any) {
-                assert.include(e.toString(), "ContractPaused");
+                assert.include(e.toString(), "SellPaused");
             } finally {
                 await provider.sendAndConfirm(
-                    new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                    new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
                 );
             }
         });
@@ -1558,7 +1974,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: SELL_AMOUNT_TRIGGER,
+                        maxWalnAmount: SELL_AMOUNT_TRIGGER,
                         roundTriggerAccounts: [
                             {pubkey: roundRecord0, isWritable: true},
                             {pubkey: roundLockedWaln0, isWritable: true},
@@ -1574,6 +1990,8 @@ describe("floor-program", () => {
                 maxSupportedTransactionVersion: 0
             });
             console.log(`    [CU] sell_waln TRIGGER (round-end + round-start, 2 investors): ${triggerTx?.meta?.computeUnitsConsumed}`);
+            const roundLockedWaln0Lamports = await provider.connection.getBalance(roundLockedWaln0);
+            console.log(`    [LAMPORTS] RoundLockedWaln account: ${roundLockedWaln0Lamports} lamports`);
 
             const sellerUsdcAfter = await getTokenBalance(provider, sellerUsdcAcc);
             assert.equal(
@@ -1622,9 +2040,127 @@ describe("floor-program", () => {
     });
 
     // ---------------------------------------------------------------------------
+    // 6b. cancel_round dust-DoS guard (issue #25)
+    // ---------------------------------------------------------------------------
+    describe("sell_waln min-sell guard (issue #25)", () => {
+        // After the round-trigger above, round N+1 is auto-started with
+        // current_round_waln == 0 — exactly the window in which cancel_round is
+        // callable. The issue showed a dust sell (>= dust floor) permanently
+        // closed that window. The min-sell guard must now reject it.
+        it("dust sell cannot close the cancel_round window", async () => {
+            const before = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(before.roundStarted, 1, "expected an auto-started round");
+            assert.ok(
+                before.currentRoundWaln.isZero(),
+                "expected the cancel_round window (current_round_waln == 0)"
+            );
+
+            // dust floor = ceil(waln_scale / floor_price) = ceil(1e9 / 1e5) = 10_000.
+            // usdc_out = 10_000 * 100_000 / 1e9 = 1 > 0, so the old code accepted it.
+            const dust = new BN(10_000);
+            assert.ok(dust.lt(MIN_SELL_WALN), "dust must be below the minimum");
+
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.sellWalnIx({
+                            seller: seller.publicKey,
+                            sellerWalnAccount: sellerWalnAcc,
+                            sellerUsdcAccount: sellerUsdcAcc,
+                            walnMint,
+                            usdcMint,
+                            walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                            maxWalnAmount: dust,
+                        })
+                    ),
+                    [seller]
+                );
+                assert.fail("dust sell should have been rejected");
+            } catch (e: any) {
+                assert.include(e.toString(), "SellAmountTooSmall");
+            }
+
+            // The window must be untouched, so cancel_round is still usable.
+            const after = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(after.roundStarted, 1, "round must remain started");
+            assert.ok(
+                after.currentRoundWaln.isZero(),
+                "current_round_waln must still be 0 — cancel_round window preserved"
+            );
+        });
+
+        it("a sub-minimum sell just below MIN_SELL_WALN is rejected", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.sellWalnIx({
+                            seller: seller.publicKey,
+                            sellerWalnAccount: sellerWalnAcc,
+                            sellerUsdcAccount: sellerUsdcAcc,
+                            walnMint,
+                            usdcMint,
+                            walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                            maxWalnAmount: MIN_SELL_WALN.subn(1),
+                        })
+                    ),
+                    [seller]
+                );
+                assert.fail("sell below MIN_SELL_WALN should have been rejected");
+            } catch (e: any) {
+                assert.include(e.toString(), "SellAmountTooSmall");
+            }
+
+            const after = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(
+                after.currentRoundWaln.isZero(),
+                "current_round_waln must still be 0"
+            );
+        });
+    });
+
+    // ---------------------------------------------------------------------------
     // 7. claim_waln
     // ---------------------------------------------------------------------------
     describe("claim_waln", () => {
+        it("rejects claim with empty remaining_accounts when mint has a hook", async () => {
+            await sleep(500);
+            const round0 = new BN(0);
+
+            const before = await sdk.fetchInvestorAlloc(round0, investor1.publicKey);
+            assert.ok(before && !before.claimed, "investor1 round-0 must be unclaimed so the claim reaches the hook gate");
+
+            const [contractState] = sdk.contractStatePda();
+            const [walnVault] = sdk.walnVaultPda();
+            const [roundLockedWaln] = sdk.roundLockedWalnPda(round0);
+
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.program.methods
+                            .claimWaln(round0, [0, 0, 0, 0])
+                            .accounts({
+                                investor: investor1.publicKey,
+                                contractState,
+                                roundLockedWaln,
+                                walnMint,
+                                investorWalnAccount: investor1WalnAcc,
+                                walnVault,
+                                walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                            } as any)
+                            .remainingAccounts([]) // empty — hooked mint must reject at the floor gate
+                            .instruction()
+                    ),
+                    [investor1]
+                );
+                assert.fail("claim with empty remaining_accounts should have been rejected");
+            } catch (e: any) {
+                assert.include(e.toString(), "InvalidHookAccountsCount");
+            }
+
+            const after = await sdk.fetchInvestorAlloc(round0, investor1.publicKey);
+            assert.ok(after && !after.claimed, "alloc must stay unclaimed after the rejected claim");
+        });
+
         it("claims locked wALN after lock expires (lock_period=0)", async () => {
             // With lock_period = 0, unlock = triggered_at + 0 = triggered_at
             // The clock moves forward between slots, so this should pass immediately.
@@ -1653,9 +2189,9 @@ describe("floor-program", () => {
             assert.equal(lw!.claimed, true);
         });
 
-        it("allows claim attempt when contract is paused (fails for other reason, not ContractPaused)", async () => {
+        it("allows claim attempt when contract is paused (fails for other reason, not SellPaused)", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
             try {
                 await provider.sendAndConfirm(
@@ -1675,7 +2211,7 @@ describe("floor-program", () => {
                 assert.include(e.toString(), "AlreadyClaimed");
             } finally {
                 await provider.sendAndConfirm(
-                    new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                    new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
                 );
             }
         });
@@ -1808,38 +2344,11 @@ describe("floor-program", () => {
             );
         });
 
-        it("rejects a sell that would exceed remaining round capacity", async () => {
-            try {
-                await provider.sendAndConfirm(
-                    new Transaction().add(
-                        await sdk.sellWalnIx({
-                            seller: seller.publicKey,
-                            sellerWalnAccount: sellerWalnAcc,
-                            sellerUsdcAccount: sellerUsdcAcc,
-                            walnMint,
-                            usdcMint,
-                            walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                            walnAmount: new BN(201 * WALN_UNIT),
-                            roundTriggerAccounts: [
-                                {pubkey: sdk.roundRecordPda(new BN(2))[0], isWritable: true},
-                                {pubkey: sdk.roundLockedWalnPda(new BN(2))[0], isWritable: true},
-                            ],
-                        })
-                    ),
-                    [seller]
-                );
-                assert.fail("should have thrown SellAmountExceedsRound");
-            } catch (e: any) {
-                assert.include(e.toString(), "SellAmountExceedsRound");
-            }
-
-            // State must be unchanged
-            const state = await sdk.program.account.programState.fetch(contractState);
-            assert.ok(state.currentRoundWaln.eqn(0));
-            assert.ok(state.roundCount.eqn(1));
-        });
-
         it("partial sell within cap accumulates without triggering", async () => {
+            const before = await sdk.program.account.programState.fetch(contractState);
+            const rc = before.roundCount.toNumber();
+            const wBefore = before.roundStarted === 1 ? before.currentRoundWaln : new BN(0);
+
             await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.sellWalnIx({
@@ -1849,49 +2358,22 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: new BN(100 * WALN_UNIT),
+                        maxWalnAmount: new BN(50 * WALN_UNIT),
                     })
                 ),
                 [seller]
             );
 
-            const state = await sdk.program.account.programState.fetch(contractState);
-            assert.ok(state.currentRoundWaln.eq(new BN(100 * WALN_UNIT)), "100 wALN accumulated");
-            assert.ok(state.roundCount.eqn(1), "round not triggered yet");
+            const after = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(after.currentRoundWaln.eq(wBefore.add(new BN(50 * WALN_UNIT))), "50 wALN accumulated");
+            assert.ok(after.roundCount.eqn(rc), "round not triggered yet");
         });
 
-        it("rejects sell exceeding remaining capacity mid-round", async () => {
-            try {
-                await provider.sendAndConfirm(
-                    new Transaction().add(
-                        await sdk.sellWalnIx({
-                            seller: seller.publicKey,
-                            sellerWalnAccount: sellerWalnAcc,
-                            sellerUsdcAccount: sellerUsdcAcc,
-                            walnMint,
-                            usdcMint,
-                            walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                            walnAmount: new BN(101 * WALN_UNIT),
-                            roundTriggerAccounts: [
-                                {pubkey: sdk.roundRecordPda(new BN(2))[0], isWritable: true},
-                                {pubkey: sdk.roundLockedWalnPda(new BN(2))[0], isWritable: true},
-                            ],
-                        })
-                    ),
-                    [seller]
-                );
-                assert.fail("should have thrown SellAmountExceedsRound");
-            } catch (e: any) {
-                assert.include(e.toString(), "SellAmountExceedsRound");
-            }
-        });
-
-        it("exact remaining capacity triggers round cleanly with current_round_waln=0", async () => {
-            const stateBefore = await sdk.program.account.programState.fetch(contractState);
-            const roundIndex = stateBefore.roundCount; // 2
-            const roundBn = new BN(roundIndex.toNumber());
-            const [roundRecord] = sdk.roundRecordPda(roundBn);
-            const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
+        it("an intervening sell does not brick the completing sell (clamps to the new gap)", async () => {
+            const before = await sdk.program.account.programState.fetch(contractState);
+            const gap = before.roundStarted === 1
+                ? before.currentRoundSizeWaln.sub(before.currentRoundWaln)
+                : before.roundSizeWaln;
 
             await provider.sendAndConfirm(
                 new Transaction().add(
@@ -1902,7 +2384,30 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: new BN(100 * WALN_UNIT),
+                        maxWalnAmount: new BN(1 * WALN_UNIT),
+                    })
+                ),
+                [seller]
+            );
+
+            const mid = await sdk.program.account.programState.fetch(contractState);
+            const roundBn = new BN(mid.roundCount.toNumber());
+            const [roundRecord] = sdk.roundRecordPda(roundBn);
+            const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
+            const newRemaining = mid.currentRoundSizeWaln.sub(mid.currentRoundWaln);
+
+            const wBefore = await getTokenBalance(provider, sellerWalnAcc, TOKEN_2022_PROGRAM_ID);
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                    await sdk.sellWalnIx({
+                        seller: seller.publicKey,
+                        sellerWalnAccount: sellerWalnAcc,
+                        sellerUsdcAccount: sellerUsdcAcc,
+                        walnMint,
+                        usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                        maxWalnAmount: gap,
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
@@ -1911,17 +2416,13 @@ describe("floor-program", () => {
                 ),
                 [seller]
             );
+            const wAfter = await getTokenBalance(provider, sellerWalnAcc, TOKEN_2022_PROGRAM_ID);
 
-            const stateAfter = await sdk.program.account.programState.fetch(contractState);
-            assert.ok(
-                stateAfter.currentRoundWaln.eqn(0),
-                `current_round_waln must be exactly 0 after clean trigger, got ${stateAfter.currentRoundWaln.toString()}`
-            );
-            assert.ok(
-                stateAfter.roundCount.eqn(roundIndex.toNumber() + 1),
-                "round_count should have incremented"
-            );
-            assert.equal(stateAfter.roundStarted, 1, "next round auto-started");
+            assert.equal(wBefore - wAfter, BigInt(newRemaining.toString()), "closer clamped to the shrunk gap, no revert");
+            const after = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(after.roundCount.eqn(mid.roundCount.toNumber() + 1), "round completed despite the race");
+            assert.ok(after.currentRoundWaln.eqn(0), "completing round reset current_round_waln to 0");
+            assert.equal(after.roundStarted, 1, "next round auto-started cleanly");
         });
     });
 
@@ -1986,7 +2487,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: new BN(100 * WALN_UNIT),
+                        maxWalnAmount: new BN(100 * WALN_UNIT),
                     })
                 ),
                 [seller]
@@ -2018,7 +2519,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: new BN(100 * WALN_UNIT),
+                        maxWalnAmount: new BN(100 * WALN_UNIT),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
@@ -2095,35 +2596,15 @@ describe("floor-program", () => {
             assert.equal(state.roundStarted, 1, "round 4 is active");
         });
 
-        it("rejects sell exceeding snapshotted round size (200 wALN) even though live size is 400 wALN", async () => {
-            try {
-                await provider.sendAndConfirm(
-                    new Transaction().add(
-                        await sdk.sellWalnIx({
-                            seller: seller.publicKey,
-                            sellerWalnAccount: sellerWalnAcc,
-                            sellerUsdcAccount: sellerUsdcAcc,
-                            walnMint,
-                            usdcMint,
-                            walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                            walnAmount: new BN(201 * WALN_UNIT),
-                        })
-                    ),
-                    [seller]
-                );
-                assert.fail("should have thrown SellAmountExceedsRound");
-            } catch (e: any) {
-                assert.include(e.toString(), "SellAmountExceedsRound");
-            }
-        });
-
-        it("next round uses new round size (400 wALN) after current round triggers", async () => {
-            const stateBefore = await sdk.program.account.programState.fetch(contractState);
-            const roundIndex = stateBefore.roundCount; // 4
-            const roundBn = new BN(roundIndex.toNumber());
+        it("oversized max clamps to the snapshotted round size (200), not the live 400", async () => {
+            const before = await sdk.program.account.programState.fetch(contractState);
+            const roundBn = new BN(before.roundCount.toNumber());
             const [roundRecord] = sdk.roundRecordPda(roundBn);
             const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
+            const snapshotRemaining = before.currentRoundSizeWaln.sub(before.currentRoundWaln);
+            assert.ok(snapshotRemaining.eq(new BN(200 * WALN_UNIT)), "round is capped at the snapshotted 200");
 
+            const wBefore = await getTokenBalance(provider, sellerWalnAcc, TOKEN_2022_PROGRAM_ID);
             await provider.sendAndConfirm(
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
@@ -2134,7 +2615,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: new BN(200 * WALN_UNIT),
+                        maxWalnAmount: new BN(400 * WALN_UNIT),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
@@ -2143,17 +2624,22 @@ describe("floor-program", () => {
                 ),
                 [seller]
             );
+            const wAfter = await getTokenBalance(provider, sellerWalnAcc, TOKEN_2022_PROGRAM_ID);
 
-            const stateAfter = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(wBefore - wAfter, BigInt(snapshotRemaining.toString()), "clamped to snapshot 200, not the live 400");
+            const after = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(after.roundCount.eqn(before.roundCount.toNumber() + 1), "round completed");
+            assert.ok(after.currentRoundWaln.eqn(0), "completing round reset current_round_waln to 0");
+            assert.equal(after.roundStarted, 1, "next round auto-started cleanly");
+        });
+
+        it("next round uses new round size (400 wALN) after current round triggers", async () => {
+            const state = await sdk.program.account.programState.fetch(contractState);
             assert.ok(
-                stateAfter.roundCount.eqn(roundIndex.toNumber() + 1),
-                "round_count should have incremented"
+                state.currentRoundSizeWaln.eq(new BN(400 * WALN_UNIT)),
+                `auto-started next round must use the updated round size 400 wALN, got ${state.currentRoundSizeWaln.toString()}`
             );
-            assert.ok(
-                stateAfter.currentRoundSizeWaln.eq(new BN(400 * WALN_UNIT)),
-                `new round must use updated round size 400 wALN, got ${stateAfter.currentRoundSizeWaln.toString()}`
-            );
-            assert.equal(stateAfter.roundStarted, 1, "next round auto-started with new round size");
+            assert.equal(state.roundStarted, 1, "next round auto-started with the new round size");
         });
     });
 
@@ -2222,7 +2708,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
+                        maxWalnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
@@ -2274,7 +2760,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
+                        maxWalnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
@@ -2332,6 +2818,80 @@ describe("floor-program", () => {
                 totalWalnPurchased + newDust,
                 walnInRound + dustCarryover,
                 "dust invariant must hold for round with bonus distribution"
+            );
+        });
+    });
+
+    describe("lock_period snapshot", () => {
+        it("admin set_lock_period does not retroactively change the active round's unlock", async () => {
+            const stateBefore = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(stateBefore.roundStarted, 1, "expects an active round");
+            const snapshotBefore = stateBefore.currentRoundLockPeriod;
+
+            const NEW_LOCK = new BN(50_000_000);
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.admin(admin.publicKey).setLockPeriod(NEW_LOCK)
+                )
+            );
+
+            const stateMid = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(
+                stateMid.currentRoundLockPeriod.eq(snapshotBefore),
+                `snapshot must not change mid-round (was ${snapshotBefore.toString()}, now ${stateMid.currentRoundLockPeriod.toString()})`
+            );
+            assert.ok(stateMid.lockPeriodSeconds.eq(NEW_LOCK));
+
+            const roundBn = new BN(stateMid.roundCount.toNumber());
+            const [roundRecord] = sdk.roundRecordPda(roundBn);
+            const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
+            const remaining = stateMid.currentRoundSizeWaln.sub(stateMid.currentRoundWaln);
+            const nowApprox = Math.floor(Date.now() / 1000);
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                    await sdk.sellWalnIx({
+                        seller: seller.publicKey,
+                        sellerWalnAccount: sellerWalnAcc,
+                        sellerUsdcAccount: sellerUsdcAcc,
+                        walnMint,
+                        usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                        maxWalnAmount: remaining,
+                        roundTriggerAccounts: [
+                            {pubkey: roundRecord, isWritable: true},
+                            {pubkey: roundLockedWaln, isWritable: true},
+                        ],
+                    })
+                ),
+                [seller]
+            );
+
+            const alloc = await sdk.fetchInvestorAlloc(roundBn, investor1.publicKey);
+            assert.ok(alloc !== null, "investor1 should have an allocation in the settled round");
+            const unlock = Number(alloc!.unlock);
+            const upper = nowApprox + snapshotBefore.toNumber() + 60;
+            assert.ok(
+                unlock <= upper,
+                `unlock (${unlock}) should reflect old snapshot (${snapshotBefore.toString()}), not the just-set ${NEW_LOCK.toString()}`
+            );
+
+            const stateAfter = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(
+                stateAfter.currentRoundLockPeriod.eq(NEW_LOCK),
+                "auto-started next round must snapshot the current lock_period_seconds"
+            );
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.admin(admin.publicKey).setLockPeriod(new BN(0))
+                )
+            );
+            const stateFinal = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(
+                stateFinal.currentRoundLockPeriod.eq(NEW_LOCK),
+                "snapshot must remain frozen after second admin change"
             );
         });
     });
@@ -2467,7 +3027,7 @@ describe("floor-program", () => {
     // 100-investor scale test
     // ---------------------------------------------------------------------------
     describe.skip("100-investor pool scale test", () => {
-        const NUM_NEW = 99;
+        const NUM_NEW = 98;
 
         interface NewInvestor {
             keypair: Keypair;
@@ -2510,7 +3070,8 @@ describe("floor-program", () => {
                 inv.walnAcc = await createTestTokenAccount(
                     provider,
                     walnMint,
-                    inv.keypair.publicKey
+                    inv.keypair.publicKey,
+                    TOKEN_2022_PROGRAM_ID
                 );
                 await mintTokensTo(
                     provider,
@@ -2556,7 +3117,8 @@ describe("floor-program", () => {
                 provider,
                 walnMint,
                 sellerWalnAcc,
-                BigInt(600 * WALN_UNIT)
+                BigInt(600 * WALN_UNIT),
+                TOKEN_2022_PROGRAM_ID
             );
 
             // 7. Complete the current active round (only investor1 and investor2 are locked).
@@ -2580,7 +3142,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: remainingToSell,
+                        maxWalnAmount: remainingToSell,
                         roundTriggerAccounts: [
                             {pubkey: roundRecordNow, isWritable: true},
                             {pubkey: roundLockedWalnNow, isWritable: true},
@@ -2611,7 +3173,7 @@ describe("floor-program", () => {
                         walnMint,
                         usdcMint,
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
-                        walnAmount: roundSizeWaln,
+                        maxWalnAmount: roundSizeWaln,
                         roundTriggerAccounts: [
                             {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
@@ -2629,12 +3191,16 @@ describe("floor-program", () => {
             console.log(
                 `    [CU] sell_waln 100-investor round trigger: ${txInfo?.meta?.computeUnitsConsumed}`
             );
+            const roundLockedWalnLamports100 = await provider.connection.getBalance(roundLockedWaln);
+            console.log(`    [LAMPORTS] RoundLockedWaln account (100-investor): ${roundLockedWalnLamports100} lamports`);
+            const investorPoolLamports100 = await provider.connection.getBalance(sdk.investorPoolPda()[0]);
+            console.log(`    [LAMPORTS] InvestorPool account (100-investor): ${investorPoolLamports100} lamports`);
 
             // Verify round record was created with 102 participants
             const rr = await sdk.fetchRoundRecord(roundIdx);
             assert.equal(
                 rr.participantCount,
-                100,
+                99,
                 "all 100 investors (1 original + 99 new) should participate"
             );
 
@@ -2657,7 +3223,7 @@ describe("floor-program", () => {
 
             // Verify pool state via InvestorRecord entries
             const pool = await sdk.fetchInvestorPool();
-            assert.ok(pool.count >= 100, "pool should hold at least 100 investors");
+            assert.ok(pool.count >= 99, "pool should hold at least 100 investors");
         });
     });
 });

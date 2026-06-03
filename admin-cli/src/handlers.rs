@@ -102,7 +102,8 @@ pub fn handle_info(program: &Program<Arc<Keypair>>) -> Result<()> {
     );
     println!("Lock Period:    {} seconds", state.lock_period_seconds);
     println!("USDC Withdraw Lock: {} seconds", state.usdc_withdraw_lock_seconds);
-    println!("Paused:         {}", state.paused == 1);
+    println!("Sell Paused:    {}", state.sell_paused == 1);
+    println!("Frozen:         {}", state.frozen == 1);
 
     println!("\n--- Round Status ---");
     println!("Round Started:  {}", state.round_started == 1);
@@ -273,11 +274,11 @@ pub fn handle_set_lock_period(program: &Program<Arc<Keypair>>, new_lock_period: 
     Ok(())
 }
 
-pub fn handle_set_paused(program: &Program<Arc<Keypair>>, paused: bool) -> Result<()> {
+pub fn handle_set_sell_paused(program: &Program<Arc<Keypair>>, paused: bool) -> Result<()> {
     let program_id = program.id();
     let (contract_state, _) = get_contract_state_address(&program_id);
 
-    println!("Setting paused to: {}", paused);
+    println!("Setting sell_paused to: {}", paused);
 
     let tx = program
         .request()
@@ -285,7 +286,26 @@ pub fn handle_set_paused(program: &Program<Arc<Keypair>>, paused: bool) -> Resul
             admin: program.payer(),
             contract_state,
         })
-        .args(floor_program::instruction::SetPaused { paused })
+        .args(floor_program::instruction::SetSellPaused { paused })
+        .send()?;
+
+    println!("Transaction successful: {}", tx);
+    Ok(())
+}
+
+pub fn handle_set_frozen(program: &Program<Arc<Keypair>>, frozen: bool) -> Result<()> {
+    let program_id = program.id();
+    let (contract_state, _) = get_contract_state_address(&program_id);
+
+    println!("Setting frozen to: {}", frozen);
+
+    let tx = program
+        .request()
+        .accounts(floor_program::accounts::AdminOnly {
+            admin: program.payer(),
+            contract_state,
+        })
+        .args(floor_program::instruction::SetFrozen { frozen })
         .send()?;
 
     println!("Transaction successful: {}", tx);
@@ -333,6 +353,37 @@ pub fn handle_fund_treasury(program: &Program<Arc<Keypair>>, amount_lamports: u6
             system_program: system_program::ID,
         })
         .args(floor_program::instruction::FundTreasury {
+            amount: amount_lamports,
+        })
+        .send()?;
+
+    println!("Transaction successful: {}", tx);
+    Ok(())
+}
+
+pub fn handle_withdraw_treasury(
+    program: &Program<Arc<Keypair>>,
+    amount_lamports: u64,
+) -> Result<()> {
+    let program_id = program.id();
+    let (contract_state, _) = get_contract_state_address(&program_id);
+    let (treasury, _) = get_treasury_address(&program_id);
+
+    println!(
+        "Withdrawing {} lamports ({:.9} SOL) from treasury...",
+        amount_lamports,
+        amount_lamports as f64 / 1e9
+    );
+
+    let tx = program
+        .request()
+        .accounts(floor_program::accounts::WithdrawTreasury {
+            admin: program.payer(),
+            contract_state,
+            treasury,
+            system_program: system_program::ID,
+        })
+        .args(floor_program::instruction::WithdrawTreasury {
             amount: amount_lamports,
         })
         .send()?;
@@ -432,6 +483,84 @@ pub fn handle_set_investor_usdc_unlock(
             investor,
             new_unlock_ts,
         })
+        .send()?;
+
+    println!("Transaction successful: {}", tx);
+    Ok(())
+}
+
+pub fn handle_update_aat_volume(
+    program: &Program<Arc<Keypair>>,
+    investor: Pubkey,
+    new_volume: u64,
+) -> Result<()> {
+    let program_id = program.id();
+    let (contract_state, _) = get_contract_state_address(&program_id);
+    let (investor_pool, _) = get_investor_pool_address(&program_id);
+    let (mint, _) = get_aat_nft_mint_address(&investor, &program_id);
+    let (nft_authority, _) = get_nft_authority_address(&program_id);
+
+    println!(
+        "Updating AAT volume for investor {} to: {}",
+        investor, new_volume
+    );
+
+    let tx = program
+        .request()
+        .accounts(floor_program::accounts::UpdateAatVolume {
+            admin: program.payer(),
+            contract_state,
+            investor_pool,
+            investor,
+            mint,
+            nft_authority,
+            token_program: anchor_spl::token_2022::ID,
+            system_program: system_program::ID,
+        })
+        .args(floor_program::instruction::UpdateAatVolume { new_volume })
+        .send()?;
+
+    println!("Transaction successful: {}", tx);
+    Ok(())
+}
+
+pub fn handle_remove_investor_from_pool(
+    program: &Program<Arc<Keypair>>,
+    investor: Pubkey,
+) -> Result<()> {
+    let program_id = program.id();
+    let (contract_state, _) = get_contract_state_address(&program_id);
+    let (investor_pool, _) = get_investor_pool_address(&program_id);
+    let (usdc_vault, _) = get_usdc_vault_address(&program_id);
+
+    let rpc = program.rpc();
+    let state = load_zero_copy::<ProgramState>(&rpc, &contract_state)?;
+    let usdc_mint = state.usdc_mint;
+
+    let investor_usdc_account =
+        anchor_spl::associated_token::get_associated_token_address_with_program_id(
+            &investor,
+            &usdc_mint,
+            &anchor_spl::token::ID,
+        );
+
+    println!("Removing investor {} from pool...", investor);
+    println!("  USDC Mint:         {}", usdc_mint);
+    println!("  Investor USDC ATA: {}", investor_usdc_account);
+
+    let tx = program
+        .request()
+        .accounts(floor_program::accounts::RemoveInvestorFromPool {
+            admin: program.payer(),
+            contract_state,
+            investor_pool,
+            investor,
+            usdc_mint,
+            investor_usdc_account,
+            usdc_vault,
+            usdc_token_program: anchor_spl::token::ID,
+        })
+        .args(floor_program::instruction::RemoveInvestorFromPool {})
         .send()?;
 
     println!("Transaction successful: {}", tx);
