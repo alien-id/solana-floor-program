@@ -486,6 +486,84 @@ pub fn handle_set_investor_usdc_unlock(
     Ok(())
 }
 
+pub fn handle_update_aat_volume(
+    program: &Program<Arc<Keypair>>,
+    investor: Pubkey,
+    new_volume: u64,
+) -> Result<()> {
+    let program_id = program.id();
+    let (contract_state, _) = get_contract_state_address(&program_id);
+    let (investor_pool, _) = get_investor_pool_address(&program_id);
+    let (mint, _) = get_aat_nft_mint_address(&investor, &program_id);
+    let (nft_authority, _) = get_nft_authority_address(&program_id);
+
+    println!(
+        "Updating AAT volume for investor {} to: {}",
+        investor, new_volume
+    );
+
+    let tx = program
+        .request()
+        .accounts(floor_program::accounts::UpdateAatVolume {
+            admin: program.payer(),
+            contract_state,
+            investor_pool,
+            investor,
+            mint,
+            nft_authority,
+            token_program: anchor_spl::token_2022::ID,
+            system_program: system_program::ID,
+        })
+        .args(floor_program::instruction::UpdateAatVolume { new_volume })
+        .send()?;
+
+    println!("Transaction successful: {}", tx);
+    Ok(())
+}
+
+pub fn handle_remove_investor_from_pool(
+    program: &Program<Arc<Keypair>>,
+    investor: Pubkey,
+) -> Result<()> {
+    let program_id = program.id();
+    let (contract_state, _) = get_contract_state_address(&program_id);
+    let (investor_pool, _) = get_investor_pool_address(&program_id);
+    let (usdc_vault, _) = get_usdc_vault_address(&program_id);
+
+    let rpc = program.rpc();
+    let state = load_zero_copy::<ProgramState>(&rpc, &contract_state)?;
+    let usdc_mint = state.usdc_mint;
+
+    let investor_usdc_account =
+        anchor_spl::associated_token::get_associated_token_address_with_program_id(
+            &investor,
+            &usdc_mint,
+            &anchor_spl::token::ID,
+        );
+
+    println!("Removing investor {} from pool...", investor);
+    println!("  USDC Mint:         {}", usdc_mint);
+    println!("  Investor USDC ATA: {}", investor_usdc_account);
+
+    let tx = program
+        .request()
+        .accounts(floor_program::accounts::RemoveInvestorFromPool {
+            admin: program.payer(),
+            contract_state,
+            investor_pool,
+            investor,
+            usdc_mint,
+            investor_usdc_account,
+            usdc_vault,
+            usdc_token_program: anchor_spl::token::ID,
+        })
+        .args(floor_program::instruction::RemoveInvestorFromPool {})
+        .send()?;
+
+    println!("Transaction successful: {}", tx);
+    Ok(())
+}
+
 pub fn handle_mint_aat_nft(
     program: &Program<Arc<Keypair>>,
     investor: Pubkey,

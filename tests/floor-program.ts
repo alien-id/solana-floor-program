@@ -776,6 +776,289 @@ describe("floor-program", () => {
     });
 
     // ---------------------------------------------------------------------------
+    // 1d. Investor lifecycle : update_aat_volume + remove_investor_from_pool
+    // ---------------------------------------------------------------------------
+    describe("investor lifecycle (update_aat_volume / remove_investor_from_pool)", () => {
+        const lifeInvestor = Keypair.generate();
+        let lifeUsdcAcc: PublicKey;
+        let lifeNft: PublicKey;
+        const INITIAL_VOLUME = new BN(1_000);
+        const DEPOSIT = new BN(1_000 * USDC_UNIT);
+        let baselineTotalAatVolume: BN;
+
+        before(async () => {
+            const sig = await provider.connection.requestAirdrop(
+                lifeInvestor.publicKey,
+                2_000_000_000
+            );
+            await provider.connection.confirmTransaction(sig);
+
+            // Ensure deposits are immediately withdrawable (no withdraw lock).
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.admin(admin.publicKey).setUsdcWithdrawLock(new BN(0))
+                )
+            );
+
+            lifeUsdcAcc = await createTestTokenAccount(
+                provider,
+                usdcMint,
+                lifeInvestor.publicKey
+            );
+            await mintTokensTo(
+                provider,
+                usdcMint,
+                lifeUsdcAcc,
+                BigInt(2_000 * USDC_UNIT)
+            );
+
+            [lifeNft] = sdk.aatNftMintPda(lifeInvestor.publicKey);
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                    await sdk.mintAatNftIx({
+                        admin: admin.publicKey,
+                        investor: lifeInvestor.publicKey,
+                        aatVolume: INITIAL_VOLUME,
+                    })
+                )
+            );
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.depositUsdcIx({
+                        investor: lifeInvestor.publicKey,
+                        investorUsdcAccount: lifeUsdcAcc,
+                        usdcMint,
+                        aatNft: lifeNft,
+                        usdcAmount: DEPOSIT,
+                    })
+                ),
+                [lifeInvestor]
+            );
+
+            const state = await sdk.program.account.programState.fetch(contractState);
+            baselineTotalAatVolume = new BN(state.totalAatVolume.toString());
+        });
+
+        it("deposit places the investor in the pool with the NFT's aat_volume", async () => {
+            const record = await sdk.fetchInvestorRecord(lifeInvestor.publicKey);
+            assert.ok(record !== null, "investor should be in the pool");
+            assert.ok(
+                record!.aatVolume.eq(INITIAL_VOLUME),
+                `expected aat_volume=${INITIAL_VOLUME}, got ${record!.aatVolume}`
+            );
+        });
+
+        it("update_aat_volume lowers allocation and decrements total_aat_volume", async () => {
+            const newVolume = new BN(400);
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.updateAatVolumeIx({
+                        admin: admin.publicKey,
+                        investor: lifeInvestor.publicKey,
+                        newVolume,
+                    })
+                )
+            );
+
+            const state = await sdk.program.account.programState.fetch(contractState);
+            const expectedTotal = baselineTotalAatVolume
+                .sub(INITIAL_VOLUME)
+                .add(newVolume);
+            assert.ok(
+                new BN(state.totalAatVolume.toString()).eq(expectedTotal),
+                `expected total_aat_volume=${expectedTotal}, got ${state.totalAatVolume}`
+            );
+
+            const record = await sdk.fetchInvestorRecord(lifeInvestor.publicKey);
+            assert.ok(
+                record!.aatVolume.eq(newVolume),
+                `expected pool record aat_volume=${newVolume}, got ${record!.aatVolume}`
+            );
+        });
+
+        it("update_aat_volume rejects a non-admin signer", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.updateAatVolumeIx({
+                            admin: lifeInvestor.publicKey,
+                            investor: lifeInvestor.publicKey,
+                            newVolume: new BN(123),
+                        })
+                    ),
+                    [lifeInvestor]
+                );
+                assert.fail("non-admin update_aat_volume should have been rejected");
+            } catch (e: any) {
+                assert.ok(
+                    e.toString().includes("Unauthorized") ||
+                    e.toString().includes("6012"),
+                    `expected Unauthorized error, got: ${e.toString()}`
+                );
+            }
+        });
+
+        it("remove_investor_from_pool rejects a non-admin signer", async () => {
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk
+                            .admin(lifeInvestor.publicKey)
+                            .removeInvestorFromPool({
+                                investor: lifeInvestor.publicKey,
+                                usdcMint,
+                                investorUsdcAccount: lifeUsdcAcc,
+                            })
+                    ),
+                    [lifeInvestor]
+                );
+                assert.fail("non-admin remove should have been rejected");
+            } catch (e: any) {
+                assert.ok(
+                    e.toString().includes("Unauthorized") ||
+                    e.toString().includes("6012"),
+                    `expected Unauthorized error, got: ${e.toString()}`
+                );
+            }
+        });
+
+        it("remove_investor_from_pool rejects an active investor", async () => {
+            // Investor still has aat_volume=400 -> not inactive (a leftover USDC
+            // deposit alone no longer blocks removal; it is refunded instead).
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk
+                            .admin(admin.publicKey)
+                            .removeInvestorFromPool({
+                                investor: lifeInvestor.publicKey,
+                                usdcMint,
+                                investorUsdcAccount: lifeUsdcAcc,
+                            })
+                    )
+                );
+                assert.fail("active investor removal should have been rejected");
+            } catch (e: any) {
+                assert.ok(
+                    e.toString().includes("InvestorNotInactive") ||
+                    e.toString().includes("6025"),
+                    `expected InvestorNotInactive error, got: ${e.toString()}`
+                );
+            }
+        });
+
+        it("admin winds the investor down to zero and reclaims the slot, refunding the leftover USDC", async () => {
+            // 1. Zero the allocation (frees the global AAT cap). The investor still
+            //    has a leftover USDC deposit, which removal must refund automatically.
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.updateAatVolumeIx({
+                        admin: admin.publicKey,
+                        investor: lifeInvestor.publicKey,
+                        newVolume: new BN(0),
+                    })
+                )
+            );
+
+            const stateAfterZero = await sdk.program.account.programState.fetch(contractState);
+            const expectedTotalAfterZero = baselineTotalAatVolume.sub(INITIAL_VOLUME);
+            assert.ok(
+                new BN(stateAfterZero.totalAatVolume.toString()).eq(expectedTotalAfterZero),
+                `expected total_aat_volume=${expectedTotalAfterZero}, got ${stateAfterZero.totalAatVolume}`
+            );
+
+            const poolBefore = await sdk.fetchInvestorPool();
+            const countBefore = poolBefore.count;
+            const recordBefore = await sdk.fetchInvestorRecord(lifeInvestor.publicKey);
+            assert.ok(
+                recordBefore!.usdcDeposited.eq(DEPOSIT),
+                `expected leftover deposit=${DEPOSIT}, got ${recordBefore!.usdcDeposited}`
+            );
+
+            const investorUsdcBefore = await getTokenBalance(provider, lifeUsdcAcc);
+            const lobbyBefore = new BN(stateAfterZero.totalUsdcInLobby.toString());
+
+            // 2. Remove the now-inactive investor in a single admin tx; the leftover
+            //    deposit is refunded to the investor's USDC account.
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk
+                        .admin(admin.publicKey)
+                        .removeInvestorFromPool({
+                            investor: lifeInvestor.publicKey,
+                            usdcMint,
+                            investorUsdcAccount: lifeUsdcAcc,
+                        })
+                )
+            );
+
+            const poolAfter = await sdk.fetchInvestorPool();
+            assert.equal(
+                poolAfter.count,
+                countBefore - 1,
+                "pool count should decrement by one"
+            );
+            assert.equal(
+                await sdk.fetchInvestorRecord(lifeInvestor.publicKey),
+                null,
+                "removed investor should no longer be in the pool"
+            );
+
+            // 3. The leftover USDC was refunded to the investor and the lobby total
+            //    was decremented by the same amount.
+            const investorUsdcAfter = await getTokenBalance(provider, lifeUsdcAcc);
+            assert.equal(
+                investorUsdcAfter - investorUsdcBefore,
+                BigInt(DEPOSIT.toString()),
+                "investor should be refunded the leftover deposit"
+            );
+
+            const stateFinal = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(
+                lobbyBefore
+                    .sub(new BN(stateFinal.totalUsdcInLobby.toString()))
+                    .eq(DEPOSIT),
+                "total_usdc_in_lobby should decrease by the refunded amount"
+            );
+
+            // 4. Global AAT volume is back to baseline minus the wound-down allocation,
+            //    leaving capacity for new investors (issue #16 resolved).
+            assert.ok(
+                new BN(stateFinal.totalAatVolume.toString()).eq(expectedTotalAfterZero),
+                `expected total_aat_volume=${expectedTotalAfterZero}, got ${stateFinal.totalAatVolume}`
+            );
+        });
+
+        it("deposit_usdc rejects an AAT NFT with zero allocation", async () => {
+            // The wound-down investor's NFT now has aat_volume == 0; a dust deposit
+            // must not let them re-occupy a pool slot.
+            try {
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        await sdk.depositUsdcIx({
+                            investor: lifeInvestor.publicKey,
+                            investorUsdcAccount: lifeUsdcAcc,
+                            usdcMint,
+                            aatNft: lifeNft,
+                            usdcAmount: new BN(1),
+                        })
+                    ),
+                    [lifeInvestor]
+                );
+                assert.fail("zero-allocation deposit should have been rejected");
+            } catch (e: any) {
+                assert.ok(
+                    e.toString().includes("ZeroAatAllocation") ||
+                    e.toString().includes("6026"),
+                    `expected ZeroAatAllocation error, got: ${e.toString()}`
+                );
+            }
+        });
+    });
+
+    // ---------------------------------------------------------------------------
     // 2. Admin instructions
     // ---------------------------------------------------------------------------
     describe("admin", () => {

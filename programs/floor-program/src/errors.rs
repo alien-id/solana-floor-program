@@ -56,4 +56,8 @@ pub enum FloorError {
     SellLeavesUnpayableDust,
     #[msg("Sell amount is below the configured minimum for this round")]
     SellAmountTooSmall,
+    #[msg("Investor is not inactive — clear aat_volume, deposits, and locked funds before removal")]
+    InvestorNotInactive,
+    #[msg("AAT NFT has zero allocation — deposits require a positive aat_volume")]
+    ZeroAatAllocation,
 }
