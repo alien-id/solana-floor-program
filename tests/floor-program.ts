@@ -2441,6 +2441,80 @@ describe("floor-program", () => {
         });
     });
 
+    describe("lock_period snapshot", () => {
+        it("admin set_lock_period does not retroactively change the active round's unlock", async () => {
+            const stateBefore = await sdk.program.account.programState.fetch(contractState);
+            assert.equal(stateBefore.roundStarted, 1, "expects an active round");
+            const snapshotBefore = stateBefore.currentRoundLockPeriod;
+
+            const NEW_LOCK = new BN(50_000_000);
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.admin(admin.publicKey).setLockPeriod(NEW_LOCK)
+                )
+            );
+
+            const stateMid = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(
+                stateMid.currentRoundLockPeriod.eq(snapshotBefore),
+                `snapshot must not change mid-round (was ${snapshotBefore.toString()}, now ${stateMid.currentRoundLockPeriod.toString()})`
+            );
+            assert.ok(stateMid.lockPeriodSeconds.eq(NEW_LOCK));
+
+            const roundBn = new BN(stateMid.roundCount.toNumber());
+            const [roundRecord] = sdk.roundRecordPda(roundBn);
+            const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
+            const remaining = stateMid.currentRoundSizeWaln.sub(stateMid.currentRoundWaln);
+            const nowApprox = Math.floor(Date.now() / 1000);
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                    await sdk.sellWalnIx({
+                        seller: seller.publicKey,
+                        sellerWalnAccount: sellerWalnAcc,
+                        sellerUsdcAccount: sellerUsdcAcc,
+                        walnMint,
+                        usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                        walnAmount: remaining,
+                        roundTriggerAccounts: [
+                            {pubkey: roundRecord, isWritable: true},
+                            {pubkey: roundLockedWaln, isWritable: true},
+                        ],
+                    })
+                ),
+                [seller]
+            );
+
+            const alloc = await sdk.fetchInvestorAlloc(roundBn, investor1.publicKey);
+            assert.ok(alloc !== null, "investor1 should have an allocation in the settled round");
+            const unlock = Number(alloc!.unlock);
+            const upper = nowApprox + snapshotBefore.toNumber() + 60;
+            assert.ok(
+                unlock <= upper,
+                `unlock (${unlock}) should reflect old snapshot (${snapshotBefore.toString()}), not the just-set ${NEW_LOCK.toString()}`
+            );
+
+            const stateAfter = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(
+                stateAfter.currentRoundLockPeriod.eq(NEW_LOCK),
+                "auto-started next round must snapshot the current lock_period_seconds"
+            );
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.admin(admin.publicKey).setLockPeriod(new BN(0))
+                )
+            );
+            const stateFinal = await sdk.program.account.programState.fetch(contractState);
+            assert.ok(
+                stateFinal.currentRoundLockPeriod.eq(NEW_LOCK),
+                "snapshot must remain frozen after second admin change"
+            );
+        });
+    });
+
     // ---------------------------------------------------------------------------
     // 15. cancel_round
     // ---------------------------------------------------------------------------

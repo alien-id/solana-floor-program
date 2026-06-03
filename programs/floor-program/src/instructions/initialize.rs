@@ -79,6 +79,7 @@ pub fn handler(
     state.current_round_size_waln = round_size_waln;
     state.round_size_waln = round_size_waln;
     state.lock_period_seconds = lock_period_seconds;
+    state.current_round_lock_period = lock_period_seconds;
     state.current_round_waln = 0;
     state.total_usdc_in_lobby = 0;
     state.round_count = 0;
