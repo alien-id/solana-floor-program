@@ -1,8 +1,9 @@
 use admin_cli::handlers::{
     handle_accept_authority, handle_cancel_round, handle_fund_treasury, handle_info,
     handle_initialize, handle_mint_aat_nft, handle_set_floor_price, handle_set_investor_usdc_unlock,
-    handle_set_lock_period, handle_set_paused, handle_set_round_size, handle_set_usdc_withdraw_lock,
-    handle_transfer_authority,
+    handle_set_frozen, handle_set_lock_period, handle_set_round_size, handle_set_sell_paused,
+    handle_set_usdc_withdraw_lock,
+    handle_transfer_authority, handle_withdraw_treasury, handle_update_aat_volume, handle_remove_investor_from_pool,
 };
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
 use anchor_client::solana_sdk::pubkey::Pubkey;
@@ -68,17 +69,31 @@ enum Commands {
         investor: String,
         new_unlock_ts: i64,
     },
-    SetPaused {
+    SetSellPaused {
         #[arg(long, action = clap::ArgAction::Set)]
         paused: bool,
+    },
+    SetFrozen {
+        #[arg(long, action = clap::ArgAction::Set)]
+        frozen: bool,
     },
     CancelRound,
     FundTreasury {
         amount_lamports: u64,
     },
+    WithdrawTreasury {
+        amount_lamports: u64,
+    },
     MintAatNft {
         investor: String,
         aat_volume: u64,
+    },
+    UpdateAatVolume {
+        investor: String,
+        new_volume: u64,
+    },
+    RemoveInvestorFromPool {
+        investor: String,
     },
     TransferAuthority {
         new_admin: String,
@@ -186,10 +201,14 @@ fn main() -> Result<()> {
                 .map_err(|e| anyhow!("Invalid investor pubkey: {}", e))?;
             handle_set_investor_usdc_unlock(&program, investor, new_unlock_ts)?
         }
-        Commands::SetPaused { paused } => handle_set_paused(&program, paused)?,
+        Commands::SetSellPaused { paused } => handle_set_sell_paused(&program, paused)?,
+        Commands::SetFrozen { frozen } => handle_set_frozen(&program, frozen)?,
         Commands::CancelRound => handle_cancel_round(&program)?,
         Commands::FundTreasury { amount_lamports } => {
             handle_fund_treasury(&program, amount_lamports)?
+        }
+        Commands::WithdrawTreasury { amount_lamports } => {
+            handle_withdraw_treasury(&program, amount_lamports)?
         }
         Commands::MintAatNft {
             investor,
@@ -199,6 +218,21 @@ fn main() -> Result<()> {
                 .parse::<Pubkey>()
                 .map_err(|e| anyhow!("Invalid investor pubkey: {}", e))?;
             handle_mint_aat_nft(&program, investor, aat_volume)?
+        }
+        Commands::UpdateAatVolume {
+            investor,
+            new_volume,
+        } => {
+            let investor = investor
+                .parse::<Pubkey>()
+                .map_err(|e| anyhow!("Invalid investor pubkey: {}", e))?;
+            handle_update_aat_volume(&program, investor, new_volume)?
+        }
+        Commands::RemoveInvestorFromPool { investor } => {
+            let investor = investor
+                .parse::<Pubkey>()
+                .map_err(|e| anyhow!("Invalid investor pubkey: {}", e))?;
+            handle_remove_investor_from_pool(&program, investor)?
         }
         Commands::TransferAuthority { new_admin } => {
             let new_admin = new_admin
