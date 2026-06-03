@@ -362,6 +362,12 @@ pub fn handler<'info>(
         }
 
         if dust_pool > 0 && participant_count_for_dust > 0 {
+            // Pseudo-random dust recipient (unix_timestamp % N): accepted as designed.
+            // dust_pool is the per-round pro-rata rounding remainder
+            // (round_size − sum(allocations)) - bounded to a fraction of a wALN
+            // because a round can't start without eligible investors and locks sum
+            // to the full round cap. A validator can nudge the winner via timestamp,
+            // but the prize is negligible.
             let dust_recipient_idx = (clock.unix_timestamp as u64)
                 .wrapping_rem(participant_count_for_dust) as usize;
 
