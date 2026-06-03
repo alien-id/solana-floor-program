@@ -1923,12 +1923,12 @@ describe("floor-program", () => {
             assert.ok(state.currentRoundWaln.eq(SELL_AMOUNT_PARTIAL));
             assert.equal(state.roundStarted, 1);
 
-            // investor1: min(5e9, floor(20e6 * 100000 / 150000)) = 13_333_333
+            // investor1: floor(20e6 * 100000 / 150000) = 13_333_333, +1 gap → 13_333_334
             const entry1 = await sdk.fetchInvestorRecord(investor1.publicKey);
-            assert.ok(entry1!.usdcLockedCurrentRound.eq(new BN(13_333_333)));
-            assert.ok(entry1!.usdcDeposited.eq(new BN(4_986_666_667)));
+            assert.ok(entry1!.usdcLockedCurrentRound.eq(new BN(13_333_334)));
+            assert.ok(entry1!.usdcDeposited.eq(new BN(4_986_666_666)));
 
-            // investor2: min(5e9, floor(20e6 * 50000 / 150000)) = 6_666_666
+            // investor2: floor(20e6 * 50000 / 150000) = 6_666_666
             const entry2 = await sdk.fetchInvestorRecord(investor2.publicKey);
             assert.ok(entry2!.usdcLockedCurrentRound.eq(new BN(6_666_666)));
             assert.ok(entry2!.usdcDeposited.eq(new BN(4_993_333_334)));
@@ -2013,8 +2013,8 @@ describe("floor-program", () => {
             // ---- verify RoundRecord created ----
             const rr = await sdk.fetchRoundRecord(round0);
             assert.equal(rr.roundIndex, 0n);
-            assert.equal(rr.walnPurchased, 199_999_990_000n);
-            assert.equal(rr.usdcSpent, 19_999_999n);
+            assert.equal(rr.walnPurchased, 200_000_000_000n);
+            assert.equal(rr.usdcSpent, 20_000_000n);
             assert.equal(rr.totalAatVolumeAtTrigger, 150000n);
             assert.equal(rr.participantCount, 2);
 
@@ -2027,7 +2027,7 @@ describe("floor-program", () => {
             // ---- verify RoundLockedWaln records ----
             const lw1 = await sdk.fetchInvestorAlloc(round0, investor1.publicKey);
             assert.ok(lw1!.investor.equals(investor1.publicKey));
-            assert.equal(lw1!.walnAmount, 133333330000n);
+            assert.equal(lw1!.walnAmount, 133333340000n);
             assert.equal(lw1!.claimed, false);
 
             const lw2 = await sdk.fetchInvestorAlloc(round0, investor2.publicKey);
@@ -2036,15 +2036,15 @@ describe("floor-program", () => {
             assert.equal(lw2!.claimed, false);
 
             const entry1 = await sdk.fetchInvestorRecord(investor1.publicKey);
-            assert.ok(entry1!.usdcLockedCurrentRound.eq(new BN(13_333_333)));
-            assert.ok(entry1!.usdcDeposited.eq(new BN(4_973_333_334)));
+            assert.ok(entry1!.usdcLockedCurrentRound.eq(new BN(13_333_334)));
+            assert.ok(entry1!.usdcDeposited.eq(new BN(4_973_333_332)));
 
             const entry2 = await sdk.fetchInvestorRecord(investor2.publicKey);
             assert.ok(entry2!.usdcLockedCurrentRound.eq(new BN(6_666_666)));
             assert.ok(entry2!.usdcDeposited.eq(new BN(4_986_666_668)));
 
-            assert.ok(entry1!.usdcCommitted.eq(new BN(13_333_333)));
-            assert.ok(entry1!.walnPurchasedTotal.eq(new BN("133333330000")));
+            assert.ok(entry1!.usdcCommitted.eq(new BN(13_333_334)));
+            assert.ok(entry1!.walnPurchasedTotal.eq(new BN("133333340000")));
             assert.ok(entry2!.usdcCommitted.eq(new BN(6_666_666)));
             assert.ok(entry2!.walnPurchasedTotal.eq(new BN("66666660000")));
         });
@@ -2194,7 +2194,7 @@ describe("floor-program", () => {
             );
 
             const walnAfter = await getTokenBalance(provider, investor1WalnAcc, TOKEN_2022_PROGRAM_ID);
-            assert.equal(walnAfter - walnBefore, 133_333_330_000n);
+            assert.equal(walnAfter - walnBefore, 133_333_340_000n);
 
             const lw = await sdk.fetchInvestorAlloc(round0, investor1.publicKey);
             assert.equal(lw!.claimed, true);
@@ -2312,8 +2312,8 @@ describe("floor-program", () => {
                 entry2!.usdcLockedCurrentRound.toNumber();
 
             assert.ok(
-                state.totalUsdcInLobby.eq(new BN(9_980_000_001)),
-                `expected totalUsdcInLobby=9980000001, got ${state.totalUsdcInLobby.toString()}`
+                state.totalUsdcInLobby.eq(new BN(9_980_000_000)),
+                `expected totalUsdcInLobby=9980000000, got ${state.totalUsdcInLobby.toString()}`
             );
             assert.equal(
                 state.totalUsdcInLobby.toNumber(),
@@ -2658,10 +2658,12 @@ describe("floor-program", () => {
     // 14. WALN dust carryover
     // ---------------------------------------------------------------------------
     describe("waln dust carryover", () => {
+        const FLOOR_PRICE_DUST = new BN(100_003);
+
         before(async () => {
             await provider.sendAndConfirm(
                 new Transaction().add(
-                    await sdk.admin(admin.publicKey).setFloorPrice(FLOOR_PRICE)
+                    await sdk.admin(admin.publicKey).setFloorPrice(FLOOR_PRICE_DUST)
                 )
             );
             await provider.sendAndConfirm(
@@ -2697,6 +2699,35 @@ describe("floor-program", () => {
                 ),
                 [investor2]
             );
+
+            const state = await sdk.program.account.programState.fetch(contractState);
+            if (state.roundStarted === 1) {
+                const remaining = state.currentRoundSizeWaln.sub(state.currentRoundWaln);
+                if (remaining.gtn(0)) {
+                    const roundBn = new BN(state.roundCount.toNumber());
+                    const [roundRecord] = sdk.roundRecordPda(roundBn);
+                    const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
+                    await provider.sendAndConfirm(
+                        new Transaction().add(
+                            ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
+                            await sdk.sellWalnIx({
+                                seller: seller.publicKey,
+                                sellerWalnAccount: sellerWalnAcc,
+                                sellerUsdcAccount: sellerUsdcAcc,
+                                walnMint,
+                                usdcMint,
+                                walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                                walnAmount: remaining,
+                                roundTriggerAccounts: [
+                                    {pubkey: roundRecord, isWritable: true},
+                                    {pubkey: roundLockedWaln, isWritable: true},
+                                ],
+                            })
+                        ),
+                        [seller]
+                    );
+                }
+            }
         });
 
         it("dust invariant holds: total_purchased + new_dust = waln_in_round + old_dust", async () => {
