@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::errors::FloorError;
-use crate::state::{InvestorRecord, MAX_INVESTORS};
+use crate::state::{InvestorRecord, MAX_INVESTORS, MIN_SELL_WALN};
 
 pub fn execute_round_start(
     investors: &mut [InvestorRecord],
@@ -50,7 +50,7 @@ pub fn execute_round_start(
                 .ok_or(FloorError::ArithmeticOverflow)?
                 .checked_div(total_aat_volume as u128)
                 .ok_or(FloorError::ArithmeticOverflow)?;
-            if (record.usdc_deposited as u128) < required_lock {
+            if required_lock == 0 || (record.usdc_deposited as u128) < required_lock {
                 eligible[i] = false;
                 changed = true;
             }
@@ -93,4 +93,20 @@ pub fn execute_round_start(
     }
 
     Ok((total_aat_volume, total_usdc_locked))
+}
+
+pub fn require_viable_round_params(
+    round_size_waln: u64,
+    floor_price_usdc: u64,
+    waln_decimals: u8,
+) -> Result<()> {
+    let waln_scale = 10_u128.pow(waln_decimals as u32);
+    let round_cap_usdc = (round_size_waln as u128)
+        .checked_mul(floor_price_usdc as u128)
+        .ok_or(FloorError::ArithmeticOverflow)?
+        .checked_div(waln_scale)
+        .ok_or(FloorError::ArithmeticOverflow)?;
+    require!(round_cap_usdc > 0, FloorError::InvalidParameter);
+    require!(round_size_waln >= MIN_SELL_WALN, FloorError::InvalidParameter);
+    Ok(())
 }

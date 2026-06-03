@@ -4,6 +4,7 @@ import { PublicKey, Transaction } from "@solana/web3.js";
 import { TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
 import {
   loadKeypairFromEnv,
+  loadKeypairFromFile,
   createProviderWithPayer,
   createSdk,
 } from "./helpers/common";
@@ -23,8 +24,13 @@ async function main() {
   const provider = createProviderWithPayer(envProvider, payer);
   const sdk = createSdk(provider);
 
+  const upgradeAuthorityPath = process.env.UPGRADE_AUTHORITY_KEYPAIR_PATH;
+  const upgradeAuthority = upgradeAuthorityPath
+    ? loadKeypairFromFile(upgradeAuthorityPath)
+    : payer;
+
   const ix = await sdk.initializeIx({
-    admin: payer.publicKey,
+    admin: upgradeAuthority.publicKey,
     usdcMint: new PublicKey(usdcMintStr),
     walnMint: new PublicKey(walnMintStr),
     floorPriceUsdc,
@@ -33,9 +39,14 @@ async function main() {
     walnTokenProgram: TOKEN_2022_PROGRAM_ID,
   });
 
+  const signers = upgradeAuthority.publicKey.equals(payer.publicKey)
+    ? [payer]
+    : [payer, upgradeAuthority];
+
   const tx = new Transaction().add(ix);
-  const sig = await provider.sendAndConfirm(tx, [payer]);
+  const sig = await provider.sendAndConfirm(tx, signers);
   console.log("initialize tx:", sig);
+  console.log("admin (upgrade authority):", upgradeAuthority.publicKey.toBase58());
 
   const [contractState] = sdk.contractStatePda();
   console.log("Contract state PDA:", contractState.toBase58());

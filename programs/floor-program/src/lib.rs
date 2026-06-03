@@ -65,16 +65,28 @@ pub mod floor_program {
         admin::set_investor_usdc_unlock(ctx, investor, new_unlock_ts)
     }
 
-    pub fn set_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
-        admin::set_paused(ctx, paused)
+    pub fn set_sell_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
+        admin::set_sell_paused(ctx, paused)
+    }
+
+    pub fn set_frozen(ctx: Context<AdminOnly>, frozen: bool) -> Result<()> {
+        admin::set_frozen(ctx, frozen)
     }
 
     pub fn cancel_round(ctx: Context<CancelRound>) -> Result<()> {
         admin::cancel_round(ctx)
     }
 
+    pub fn remove_investor_from_pool(ctx: Context<RemoveInvestorFromPool>) -> Result<()> {
+        admin::remove_investor_from_pool(ctx)
+    }
+
     pub fn fund_treasury(ctx: Context<FundTreasury>, amount: u64) -> Result<()> {
         admin::fund_treasury(ctx, amount)
+    }
+
+    pub fn withdraw_treasury(ctx: Context<WithdrawTreasury>, amount: u64) -> Result<()> {
+        admin::withdraw_treasury(ctx, amount)
     }
 
     pub fn deposit_usdc(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
@@ -87,9 +99,9 @@ pub mod floor_program {
 
     pub fn sell_waln<'info>(
         ctx: Context<'_, '_, 'info, 'info, SellWaln<'info>>,
-        waln_amount: u64,
+        max_waln_amount: u64,
     ) -> Result<()> {
-        sell_waln::handler(ctx, waln_amount)
+        sell_waln::handler(ctx, max_waln_amount)
     }
 
     pub fn claim_waln<'info>(
@@ -103,11 +115,19 @@ pub mod floor_program {
         mint_aat_nft::handler(ctx, aat_volume)
     }
 
+    pub fn update_aat_volume(ctx: Context<UpdateAatVolume>, new_volume: u64) -> Result<()> {
+        update_aat_volume::handler(ctx, new_volume)
+    }
+
     pub fn transfer_authority(ctx: Context<TransferAuthority>) -> Result<()> {
         transfer_authority::transfer_authority(ctx)
     }
 
     pub fn accept_authority(ctx: Context<AcceptAuthority>) -> Result<()> {
         transfer_authority::accept_authority(ctx)
+    }
+
+    pub fn close_round_record(ctx: Context<CloseRoundRecord>, round_index: u64) -> Result<()> {
+        close_round::close_round_record(ctx, round_index)
     }
 }
