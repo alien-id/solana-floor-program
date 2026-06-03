@@ -8,8 +8,8 @@ use anchor_spl::token_2022::Token2022;
 use spl_token_2022::{extension::ExtensionType, state::Mint};
 use spl_token_2022::instruction::AuthorityType;
 use crate::errors::FloorError;
-use crate::seeds::{AAT_NFT_SEED, CONTRACT_STATE_SEED};
 use crate::state::ProgramState;
+use crate::seeds::{AAT_NFT_SEED, CONTRACT_STATE_SEED, NFT_AUTHORITY_SEED};
 
 #[derive(Accounts)]
 pub struct MintAatNft<'info> {
@@ -41,7 +41,7 @@ pub struct MintAatNft<'info> {
 
     /// CHECK: PDA used only as mint/metadata authority via signed CPI — no data, no init
     #[account(
-        seeds = [b"nft_authority"],
+        seeds = [NFT_AUTHORITY_SEED],
         bump,
     )]
     pub nft_authority: UncheckedAccount<'info>,
@@ -139,7 +139,7 @@ pub fn handler(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
         .map_err(|_| error!(FloorError::InvalidMintAccountSpace))?,
         &[ctx.accounts.mint.to_account_info()],
     )?;
-    
+
     token_2022::initialize_mint2(
         CpiContext::new(
             ctx.accounts.token_program.to_account_info(),
@@ -153,7 +153,7 @@ pub fn handler(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
     )?;
 
     let nft_authority_bump = ctx.bumps.nft_authority;
-    let nft_signer: &[&[&[u8]]] = &[&[b"nft_authority", &[nft_authority_bump]]];
+    let nft_signer: &[&[&[u8]]] = &[&[NFT_AUTHORITY_SEED, &[nft_authority_bump]]];
 
     msg!("Init metadata {}", ctx.accounts.mint.key());
 
@@ -216,7 +216,7 @@ pub fn handler(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
         ),
         1
     )?;
-    
+
     token_2022::freeze_account(
         CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
@@ -241,7 +241,7 @@ pub fn handler(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
         AuthorityType::MintTokens,
         None
     )?;
-    
+
     token_2022::set_authority(
         CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
