@@ -2,10 +2,10 @@ use anchor_lang::prelude::*;
 
 #[error_code]
 pub enum FloorError {
-    #[msg("Contract is paused")]
-    ContractPaused,
-    #[msg("Sell amount exceeds remaining round capacity; split into smaller sells")]
-    SellAmountExceedsRound,
+    #[msg("Selling is paused")]
+    SellPaused,
+    #[msg("Contract is frozen — all operations are halted")]
+    ContractFrozen,
     #[msg("Amount must be greater than zero")]
     ZeroAmount,
     #[msg("Insufficient funds available")]
@@ -40,8 +40,6 @@ pub enum FloorError {
     WalnAllocationLimitExceeded,
     #[msg("Investor pool is full")]
     InvestorPoolFull,
-    #[msg("Investors have insufficient deposits to cover the full round size")]
-    InsufficientDepositsForRound,
     #[msg("Invalid hook accounts count")]
     InvalidHookAccountsCount,
     #[msg("Invalid hook accounts")]
@@ -52,4 +50,12 @@ pub enum FloorError {
     NoPendingAdmin,
     #[msg("USDC is still locked — withdrawal is not allowed before the unlock timestamp")]
     UsdcLocked,
+    #[msg("Sale would leave an unpayable WALN dust remainder; sell the full remaining round capacity instead")]
+    SellLeavesUnpayableDust,
+    #[msg("Sell amount is below the configured minimum for this round")]
+    SellAmountTooSmall,
+    #[msg("Investor is not inactive — clear aat_volume, deposits, and locked funds before removal")]
+    InvestorNotInactive,
+    #[msg("AAT NFT has zero allocation — deposits require a positive aat_volume")]
+    ZeroAatAllocation,
 }

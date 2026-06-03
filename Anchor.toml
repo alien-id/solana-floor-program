@@ -27,6 +27,9 @@ isLocalSigner = true
 localSignerPrivateKey = "4a8f2e1b3c7d9e0f5a8f2e1b3c7d9e0f5a8f2e1b3c7d9e0f5a8f2e1b3c7d9e0f"
 localSignerPublicKey = "3e8648798cfc382c1831722f8c6046e2d0399bd9e08e8087d22089b1e0fb5cf9"
 
+[test]
+upgradeable = true
+
 [test.validator]
 bind_address = "127.0.0.1"
 deactivate_feature = ["CxeBn9PVeeXbmjbNwLv6U4C6svNxnC4JX6mfkvgeMocM"]
