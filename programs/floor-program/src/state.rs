@@ -2,22 +2,32 @@ use anchor_lang::prelude::*;
 
 pub const MAX_INVESTORS: usize = 100;
 
-#[zero_copy]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug)]
 pub struct InvestorAlloc {
     pub investor: Pubkey,
     pub waln_amount: u64,
-    pub unlock: i64,
-    pub claimed: u8,
-    pub _pad: [u8; 7],
 }
 
-#[account(zero_copy)]
+impl InvestorAlloc {
+    pub const SIZE: usize = 32 + 8;
+}
+
+#[account]
 pub struct RoundLockedWaln {
     pub round_index: u64,
-    pub count: u32,
     pub bump: u8,
-    pub _pad: [u8; 3],
-    pub investors: [InvestorAlloc; MAX_INVESTORS],
+    pub unlock: i64,
+    // how many participants still need to claim before the account can close
+    pub remaining_to_claim: u32,
+    pub investors: Vec<InvestorAlloc>,
+}
+
+impl RoundLockedWaln {
+    // round_index(8) + bump(1) + unlock(8) + remaining_to_claim(4) + Vec len prefix(4)
+    pub const FIXED_SIZE: usize = 8 + 1 + 8 + 4 + 4;
+    pub fn space(n: usize) -> usize {
+        8 + Self::FIXED_SIZE + n * InvestorAlloc::SIZE
+    }
 }
 
 #[account(zero_copy)]
@@ -83,4 +93,22 @@ pub struct RoundRecord {
     pub total_aat_volume_at_trigger: u64,
     pub participant_count: u32,
     pub bump: u8,
+}
+
+#[event]
+pub struct InvestorAllocated {
+    pub round_index: u64,
+    pub investor: Pubkey,
+    pub waln_amount: u64,
+    pub usdc_spent: u64,
+    pub unlock: i64,
+}
+
+#[event]
+pub struct RoundClosed {
+    pub round_index: u64,
+    pub waln_purchased: u64,
+    pub usdc_spent: u64,
+    pub participant_count: u32,
+    pub unlock: i64,
 }

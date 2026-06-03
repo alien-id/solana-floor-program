@@ -334,6 +334,7 @@ export class FloorSdk {
     const [contractState] = this.contractStatePda();
     const [walnVault] = this.walnVaultPda();
     const [roundLockedWaln] = this.roundLockedWalnPda(args.roundIndex);
+    const [treasury] = this.treasuryPda();
     const { accounts: hookAccounts, bumps: hookBumps } = await buildHookAccountsWithBumps(
       this.program.provider.connection,
       contractState,
@@ -346,6 +347,7 @@ export class FloorSdk {
         investor: args.investor,
         contractState,
         roundLockedWaln,
+        treasury,
         walnMint: args.walnMint,
         investorWalnAccount: args.investorWalnAccount,
         walnVault,
@@ -355,15 +357,6 @@ export class FloorSdk {
       .instruction();
   }
 
-  /**
-   * Decode the RoundLockedWaln account and return the InvestorAlloc for a given investor.
-   * Layout per InvestorAlloc (56 bytes):
-   *   [0..32]  investor: Pubkey
-   *   [32..40] waln_amount: u64 LE
-   *   [40..48] unlock: i64 LE
-   *   [48]     claimed: u8
-   *   [49..56] _pad
-   */
   async fetchInvestorAlloc(roundIndex: BN, investor: PublicKey): Promise<{
     investor: PublicKey;
     walnAmount: bigint;
@@ -375,17 +368,22 @@ export class FloorSdk {
     if (!info) return null;
 
     const buf = Buffer.from(info.data);
-    const count = buf.readUInt32LE(8 + 8);
-    const ALLOC_SIZE = 56;
-    const ALLOC_OFFSET = 8 + 16;
+    const HEADER_SIZE = 33;
+    const ALLOC_SIZE = 40;
+    const ALLOC_OFFSET = HEADER_SIZE;
+    if (buf.length < HEADER_SIZE) return null;
+
+    const unlock = buf.readBigInt64LE(17);
+    const count = buf.readUInt32LE(29);
 
     for (let i = 0; i < count; i++) {
       const off = ALLOC_OFFSET + i * ALLOC_SIZE;
+      if (off + ALLOC_SIZE > buf.length) return null;
+
       const key = new PublicKey(buf.subarray(off, off + 32));
       if (key.equals(investor)) {
         const walnAmount = buf.readBigUInt64LE(off + 32);
-        const unlock = buf.readBigInt64LE(off + 40);
-        const claimed = buf.readUInt8(off + 48) !== 0;
+        const claimed = walnAmount === 0n;
         return { investor: key, walnAmount, unlock, claimed };
       }
     }
