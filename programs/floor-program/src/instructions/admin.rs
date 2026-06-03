@@ -3,7 +3,7 @@ use anchor_lang::solana_program::{program::{invoke, invoke_signed}, system_instr
 
 use crate::errors::FloorError;
 use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, TREASURY_SEED};
-use crate::state::{InvestorPool, ProgramState};
+use crate::state::{InvestorPool, ProgramState, MIN_SELL_WALN};
 
 #[derive(Accounts)]
 pub struct AdminOnly<'info> {
@@ -27,6 +27,7 @@ pub fn set_floor_price(ctx: Context<AdminOnly>, new_price_usdc: u64) -> Result<(
 
 pub fn set_round_size(ctx: Context<AdminOnly>, new_round_size_waln: u64) -> Result<()> {
     require!(new_round_size_waln > 0, FloorError::InvalidParameter);
+    require!(new_round_size_waln >= MIN_SELL_WALN, FloorError::InvalidParameter);
     let mut state = ctx.accounts.contract_state.load_mut()?;
     state.round_size_waln = new_round_size_waln;
     Ok(())

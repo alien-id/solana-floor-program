@@ -54,4 +54,6 @@ pub enum FloorError {
     UsdcLocked,
     #[msg("Sale would leave an unpayable WALN dust remainder; sell the full remaining round capacity instead")]
     SellLeavesUnpayableDust,
+    #[msg("Sell amount is below the configured minimum for this round")]
+    SellAmountTooSmall,
 }
