@@ -55,6 +55,7 @@ pub fn handler(ctx: Context<WithdrawUsdc>, amount: u64) -> Result<()> {
     let usdc_withdraw_lock_seconds;
     {
         let state = ctx.accounts.contract_state.load()?;
+        require!(state.frozen == 0, FloorError::ContractFrozen);
         require!(ctx.accounts.usdc_mint.key() == state.usdc_mint, FloorError::InvalidMint);
         state_bump = state.bump;
         usdc_decimals = ctx.accounts.usdc_mint.decimals;
