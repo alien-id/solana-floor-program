@@ -1,5 +1,9 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
+use spl_token_2022::extension::{
+    transfer_fee::TransferFeeConfig, BaseStateWithExtensions, StateWithExtensions,
+};
+use spl_token_2022::state::Mint as SplMint;
 
 use crate::errors::FloorError;
 use crate::instructions::start_round::require_viable_round_params;
@@ -77,6 +81,17 @@ pub fn handler(
     require!(round_size_waln > 0, FloorError::InvalidParameter);
     require_viable_round_params(round_size_waln, floor_price_usdc, ctx.accounts.waln_mint.decimals)?;
     require!(lock_period_seconds >= 0, FloorError::InvalidParameter);
+
+    {
+        let waln_mint_info = ctx.accounts.waln_mint.to_account_info();
+        let waln_mint_data = waln_mint_info.try_borrow_data()?;
+        let waln_mint_with_ext = StateWithExtensions::<SplMint>::unpack(&waln_mint_data)
+            .map_err(|_| error!(FloorError::InvalidParameter))?;
+        require!(
+            waln_mint_with_ext.get_extension::<TransferFeeConfig>().is_err(),
+            FloorError::InvalidParameter
+        );
+    }
 
     let mut state = ctx.accounts.contract_state.load_init()?;
     state.admin = ctx.accounts.admin.key();
