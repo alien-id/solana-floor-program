@@ -8,8 +8,8 @@ use anchor_spl::token_2022::Token2022;
 use spl_token_2022::{extension::ExtensionType, state::Mint};
 use spl_token_2022::instruction::AuthorityType;
 use crate::errors::FloorError;
+use crate::state::ProgramState;
 use crate::seeds::{AAT_NFT_SEED, CONTRACT_STATE_SEED, NFT_AUTHORITY_SEED};
-use crate::state::{AatNftAuthority, ProgramState};
 
 #[derive(Accounts)]
 pub struct MintAatNft<'info> {
@@ -39,14 +39,12 @@ pub struct MintAatNft<'info> {
     #[account(mut)]
     pub investor_aat_account: UncheckedAccount<'info>,
 
+    /// CHECK: PDA used only as mint/metadata authority via signed CPI — no data, no init
     #[account(
-        init_if_needed,
         seeds = [NFT_AUTHORITY_SEED],
         bump,
-        space = 8,
-        payer = admin,
     )]
-    pub nft_authority: Account<'info, AatNftAuthority>,
+    pub nft_authority: UncheckedAccount<'info>,
 
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token2022>,
@@ -59,6 +57,7 @@ pub fn handler(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
     require!(aat_volume > 0, FloorError::InvalidParameter);
     {
         let mut state = ctx.accounts.contract_state.load_mut()?;
+        require!(state.frozen == 0, FloorError::ContractFrozen);
         let new_total = state.total_aat_volume
             .checked_add(aat_volume)
             .ok_or(FloorError::ArithmeticOverflow)?;
@@ -150,7 +149,7 @@ pub fn handler(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
         ),
         0,
         &ctx.accounts.nft_authority.key(),
-        None
+        Some(&ctx.accounts.nft_authority.key())
     )?;
 
     let nft_authority_bump = ctx.bumps.nft_authority;
@@ -218,6 +217,18 @@ pub fn handler(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
         1
     )?;
 
+    token_2022::freeze_account(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            token_2022::FreezeAccount {
+                account: ctx.accounts.investor_aat_account.to_account_info(),
+                mint: ctx.accounts.mint.to_account_info(),
+                authority: ctx.accounts.nft_authority.to_account_info(),
+            },
+            nft_signer
+        )
+    )?;
+
     token_2022::set_authority(
         CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
@@ -228,6 +239,19 @@ pub fn handler(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
             nft_signer
         ),
         AuthorityType::MintTokens,
+        None
+    )?;
+
+    token_2022::set_authority(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            token_2022::SetAuthority {
+                current_authority: ctx.accounts.nft_authority.to_account_info(),
+                account_or_mint: ctx.accounts.mint.to_account_info(),
+            },
+            nft_signer
+        ),
+        AuthorityType::FreezeAccount,
         None
     )?;
 
