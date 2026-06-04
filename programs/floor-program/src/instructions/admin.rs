@@ -177,6 +177,7 @@ pub fn cancel_round(ctx: Context<CancelRound>) -> Result<()> {
         require!(state.current_round_waln == 0, FloorError::InvalidParameter);
         state.round_started = 0;
         state.current_round_waln = 0;
+        state.current_round_usdc_spent = 0;
         state.total_usdc_locked_for_round = 0;
     }
 

@@ -263,9 +263,14 @@ pub fn handler<'info>(
         state.current_round_floor_price = snapshot_price;
         state.current_round_size_waln = snapshot_size;
         state.current_round_lock_period = state.lock_period_seconds;
+        state.current_round_usdc_spent = 0;
         state.total_usdc_locked_for_round = usdc_locked_new;
         state.round_started = 1;
     }
+    state.current_round_usdc_spent = state
+        .current_round_usdc_spent
+        .checked_add(usdc_out)
+        .ok_or(FloorError::ArithmeticOverflow)?;
     state.current_round_waln = state
         .current_round_waln
         .checked_add(waln_amount)
@@ -562,6 +567,7 @@ pub fn handler<'info>(
             .checked_add(1)
             .ok_or(FloorError::ArithmeticOverflow)?;
         state.current_round_waln = 0;
+        state.current_round_usdc_spent = 0;
         state.total_usdc_in_lobby = state
             .total_usdc_in_lobby
             .checked_sub(total_usdc_spent)
@@ -589,6 +595,7 @@ pub fn handler<'info>(
                     state.current_round_floor_price = floor_price_usdc_val;
                     state.current_round_size_waln = round_size_waln_val;
                     state.current_round_lock_period = state.lock_period_seconds;
+                    state.current_round_usdc_spent = 0;
                     state.total_usdc_locked_for_round = usdc_locked;
                     state.round_started = 1;
                 }

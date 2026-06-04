@@ -81,6 +81,12 @@ pub mod floor_program {
         admin::remove_investor_from_pool(ctx)
     }
 
+    pub fn close_round<'info>(
+        ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>,
+    ) -> Result<()> {
+        close_round::close_round(ctx)
+    }
+
     pub fn fund_treasury(ctx: Context<FundTreasury>, amount: u64) -> Result<()> {
         admin::fund_treasury(ctx, amount)
     }
