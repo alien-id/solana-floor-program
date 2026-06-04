@@ -17,6 +17,8 @@
     "integration:set-paused": "node -r ts-node/register integration/13_set_paused.ts",
     "integration:fund-treasury": "node -r ts-node/register integration/14_fund_treasury.ts",
     "integration:cancel-round": "node -r ts-node/register integration/15_cancel_round.ts",
+    "integration:update-aat-volume": "node -r ts-node/register integration/18_update_aat_volume.ts",
+    "integration:remove-investor-from-pool": "node -r ts-node/register integration/19_remove_investor_from_pool.ts",
     "integration:close-round": "node -r ts-node/register integration/18_close_round.ts"
   },
   "dependencies": {

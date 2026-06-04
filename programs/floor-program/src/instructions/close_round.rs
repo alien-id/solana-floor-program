@@ -272,66 +272,67 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
     let treasury_bump = ctx.bumps.treasury;
 
     // --- Create / fund the RoundLockedWaln account and write allocations. ---
-    let round_locked_waln_space = 8 + std::mem::size_of::<RoundLockedWaln>();
-    let round_locked_waln_rent = Rent::get()?.minimum_balance(round_locked_waln_space);
+    if !participant_data.is_empty() {
+        let round_locked_waln_space = RoundLockedWaln::space(participant_data.len());
+        let round_locked_waln_rent = Rent::get()?.minimum_balance(round_locked_waln_space);
 
-    let existing_locked_waln_lamports = round_locked_waln_info.lamports();
-    if existing_locked_waln_lamports == 0 {
-        invoke_signed(
-            &system_instruction::create_account(
-                treasury_info.key,
-                round_locked_waln_info.key,
-                round_locked_waln_rent,
-                round_locked_waln_space as u64,
-                &crate::ID,
-            ),
-            &[treasury_info.clone(), round_locked_waln_info.clone(), system_program_info.clone()],
-            &[
-                &[TREASURY_SEED, &[treasury_bump]],
-                &[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]],
-            ],
-        )?;
-    } else {
-        if existing_locked_waln_lamports < round_locked_waln_rent {
+        let existing_locked_waln_lamports = round_locked_waln_info.lamports();
+        if existing_locked_waln_lamports == 0 {
             invoke_signed(
-                &system_instruction::transfer(
+                &system_instruction::create_account(
                     treasury_info.key,
                     round_locked_waln_info.key,
-                    round_locked_waln_rent - existing_locked_waln_lamports,
+                    round_locked_waln_rent,
+                    round_locked_waln_space as u64,
+                    &crate::ID,
                 ),
                 &[treasury_info.clone(), round_locked_waln_info.clone(), system_program_info.clone()],
-                &[&[TREASURY_SEED, &[treasury_bump]]],
+                &[
+                    &[TREASURY_SEED, &[treasury_bump]],
+                    &[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]],
+                ],
+            )?;
+        } else {
+            if existing_locked_waln_lamports < round_locked_waln_rent {
+                invoke_signed(
+                    &system_instruction::transfer(
+                        treasury_info.key,
+                        round_locked_waln_info.key,
+                        round_locked_waln_rent - existing_locked_waln_lamports,
+                    ),
+                    &[treasury_info.clone(), round_locked_waln_info.clone(), system_program_info.clone()],
+                    &[&[TREASURY_SEED, &[treasury_bump]]],
+                )?;
+            }
+            invoke_signed(
+                &system_instruction::allocate(round_locked_waln_info.key, round_locked_waln_space as u64),
+                &[round_locked_waln_info.clone(), system_program_info.clone()],
+                &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
+            )?;
+            invoke_signed(
+                &system_instruction::assign(round_locked_waln_info.key, &crate::ID),
+                &[round_locked_waln_info.clone(), system_program_info.clone()],
+                &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
             )?;
         }
-        invoke_signed(
-            &system_instruction::allocate(round_locked_waln_info.key, round_locked_waln_space as u64),
-            &[round_locked_waln_info.clone(), system_program_info.clone()],
-            &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
-        )?;
-        invoke_signed(
-            &system_instruction::assign(round_locked_waln_info.key, &crate::ID),
-            &[round_locked_waln_info.clone(), system_program_info.clone()],
-            &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
-        )?;
-    }
 
-    {
-        let mut data = round_locked_waln_info.try_borrow_mut_data()?;
-        data[..8].copy_from_slice(&RoundLockedWaln::DISCRIMINATOR);
-        let rw: &mut RoundLockedWaln = bytemuck::from_bytes_mut(&mut data[8..]);
-        rw.round_index = round_index;
-        rw.count = participant_count;
-        rw.bump = round_locked_waln_bump;
-        rw._pad = [0; 3];
-        for (i, (investor, waln_alloc)) in participant_data.iter().enumerate() {
-            rw.investors[i] = InvestorAlloc {
+        let entries: Vec<InvestorAlloc> = participant_data
+            .iter()
+            .map(|(investor, waln_amount)| InvestorAlloc {
                 investor: *investor,
-                waln_amount: *waln_alloc,
-                unlock: unlock_timestamp,
-                claimed: 0,
-                _pad: [0; 7],
-            };
-        }
+                waln_amount: *waln_amount,
+            })
+            .collect();
+        let rlw = RoundLockedWaln {
+            round_index,
+            bump: round_locked_waln_bump,
+            unlock: unlock_timestamp,
+            remaining_to_claim: participant_count,
+            investors: entries,
+        };
+        let mut data = round_locked_waln_info.try_borrow_mut_data()?;
+        let mut writer: &mut [u8] = &mut data;
+        rlw.try_serialize(&mut writer)?;
     }
 
     // --- Create / fund the RoundRecord account and write the round summary. ---
@@ -418,6 +419,40 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
         .checked_add(new_dust)
         .ok_or(FloorError::ArithmeticOverflow)?;
 
+    Ok(())
+}
+
+#[derive(Accounts)]
+#[instruction(round_index: u64)]
+pub struct CloseRoundRecord<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+
+    #[account(
+        seeds = [CONTRACT_STATE_SEED],
+        bump,
+        constraint = contract_state.load()?.admin == admin.key() @ FloorError::Unauthorized,
+    )]
+    pub contract_state: AccountLoader<'info, ProgramState>,
+
+    #[account(
+        mut,
+        close = treasury,
+        seeds = [ROUND_RECORD_SEED, &round_index.to_le_bytes()],
+        bump = round_record.bump,
+    )]
+    pub round_record: Account<'info, RoundRecord>,
+
+    /// CHECK: Treasury PDA — receives the rent refund when the round record closes
+    #[account(
+        mut,
+        seeds = [TREASURY_SEED],
+        bump,
+    )]
+    pub treasury: UncheckedAccount<'info>,
+}
+
+pub fn close_round_record(_ctx: Context<CloseRoundRecord>, _round_index: u64) -> Result<()> {
     Ok(())
 }
 

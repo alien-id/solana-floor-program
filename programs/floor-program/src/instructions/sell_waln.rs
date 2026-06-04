@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{program::{invoke, invoke_signed}, system_instruction};
+use anchor_lang::solana_program::{log::sol_log_data, program::{invoke, invoke_signed}, system_instruction};
+use anchor_lang::Discriminator;
 use anchor_spl::token_interface::{
     transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
@@ -12,7 +13,7 @@ use crate::seeds::{
     CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, ROUND_LOCKED_WALN_SEED, ROUND_RECORD_SEED,
     TREASURY_SEED, USDC_VAULT_SEED, WALN_VAULT_SEED,
 };
-use crate::state::{InvestorAlloc, InvestorPool, ProgramState, RoundLockedWaln, RoundRecord};
+use crate::state::{InvestorAlloc, InvestorAllocated, InvestorPool, ProgramState, RoundClosed, RoundLockedWaln, RoundRecord, MIN_SELL_WALN};
 
 #[derive(Accounts)]
 pub struct SellWaln<'info> {
@@ -88,8 +89,7 @@ pub struct SellWaln<'info> {
 
 pub fn handler<'info>(
     ctx: Context<'_, '_, 'info, 'info, SellWaln<'info>>,
-    waln_amount: u64,
-    hook_bumps: [u8; 4],
+    max_waln_amount: u64,
 ) -> Result<()> {
     let waln_decimals = ctx.accounts.waln_mint.decimals;
     let usdc_decimals = ctx.accounts.usdc_mint.decimals;
@@ -103,11 +103,13 @@ pub fn handler<'info>(
     let need_round_start;
     let snapshot_price;
     let snapshot_size;
+    let waln_amount;
 
     {
         let state = ctx.accounts.contract_state.load()?;
-        require!(state.paused == 0, FloorError::ContractPaused);
-        require!(waln_amount > 0, FloorError::ZeroAmount);
+        require!(state.frozen == 0, FloorError::ContractFrozen);
+        require!(state.sell_paused == 0, FloorError::SellPaused);
+        require!(max_waln_amount > 0, FloorError::ZeroAmount);
         require!(ctx.accounts.waln_mint.key() == state.waln_mint, FloorError::InvalidMint);
         require!(ctx.accounts.usdc_mint.key() == state.usdc_mint, FloorError::InvalidMint);
 
@@ -128,7 +130,29 @@ pub fn handler<'info>(
         let remaining_in_round = eff_round_size
             .checked_sub(eff_round_waln)
             .ok_or(FloorError::ArithmeticOverflow)?;
-        require!(waln_amount <= remaining_in_round, FloorError::SellAmountExceedsRound);
+        waln_amount = max_waln_amount.min(remaining_in_round);
+        require!(waln_amount > 0, FloorError::ZeroAmount);
+
+        let post_sale_remaining = remaining_in_round
+            .checked_sub(waln_amount)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+        if post_sale_remaining > 0 {
+            let local_waln_scale = 10_u128.pow(waln_decimals as u32);
+            let post_sale_usdc = (post_sale_remaining as u128)
+                .checked_mul(eff_floor_price as u128)
+                .ok_or(FloorError::ArithmeticOverflow)?
+                .checked_div(local_waln_scale)
+                .ok_or(FloorError::ArithmeticOverflow)?;
+            require!(post_sale_usdc > 0, FloorError::SellLeavesUnpayableDust);
+        }
+
+        if eff_round_waln == 0 {
+            let is_completing = waln_amount == remaining_in_round;
+            require!(
+                waln_amount >= MIN_SELL_WALN || is_completing,
+                FloorError::SellAmountTooSmall
+            );
+        }
 
         floor_price_usdc = eff_floor_price;
         current_round_size_waln = eff_round_size;
@@ -177,7 +201,6 @@ pub fn handler<'info>(
             &ctx.accounts.waln_mint.key(),
             &ctx.accounts.seller.key(),
             &hook_program_id,
-            hook_bumps,
         )?;
         hook_offset = 8;
     } else {
@@ -345,6 +368,12 @@ pub fn handler<'info>(
         }
 
         if dust_pool > 0 && participant_count_for_dust > 0 {
+            // Pseudo-random dust recipient (unix_timestamp % N): accepted as designed.
+            // dust_pool is the per-round pro-rata rounding remainder
+            // (round_size − sum(allocations)) - bounded to a fraction of a wALN
+            // because a round can't start without eligible investors and locks sum
+            // to the full round cap. A validator can nudge the winner via timestamp,
+            // but the prize is negligible.
             let dust_recipient_idx = (clock.unix_timestamp as u64)
                 .wrapping_rem(participant_count_for_dust) as usize;
 
@@ -370,71 +399,109 @@ pub fn handler<'info>(
             }
         }
 
+        let participant_count = participant_data.len() as u32;
+        participant_data.retain(|(_, waln_amount)| *waln_amount > 0);
         participant_data.sort_unstable_by(|a, b| a.0.to_bytes().cmp(&b.0.to_bytes()));
 
-        let participant_count = participant_data.len() as u32;
-        let round_locked_waln_space = 8 + std::mem::size_of::<RoundLockedWaln>();
-        let round_locked_waln_rent = Rent::get()?.minimum_balance(round_locked_waln_space);
+        if !participant_data.is_empty() {
+            let claimable_participant_count = participant_data.len() as u32;
+            let round_locked_waln_space = RoundLockedWaln::space(participant_data.len());
+            let round_locked_waln_rent = Rent::get()?.minimum_balance(round_locked_waln_space);
 
-        let existing_locked_waln_lamports = round_locked_waln_info.lamports();
-        if existing_locked_waln_lamports == 0 {
-            invoke_signed(
-                &system_instruction::create_account(
-                    treasury_info.key,
-                    round_locked_waln_info.key,
-                    round_locked_waln_rent,
-                    round_locked_waln_space as u64,
-                    &crate::ID,
-                ),
-                &[treasury_info.clone(), round_locked_waln_info.clone(), system_program_info.clone()],
-                &[
-                    &[TREASURY_SEED, &[treasury_bump]],
-                    &[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]],
-                ],
-            )?;
-        } else {
-            if existing_locked_waln_lamports < round_locked_waln_rent {
+            let existing_locked_waln_lamports = round_locked_waln_info.lamports();
+            if existing_locked_waln_lamports == 0 {
                 invoke_signed(
-                    &system_instruction::transfer(
+                    &system_instruction::create_account(
                         treasury_info.key,
                         round_locked_waln_info.key,
-                        round_locked_waln_rent - existing_locked_waln_lamports,
+                        round_locked_waln_rent,
+                        round_locked_waln_space as u64,
+                        &crate::ID,
                     ),
                     &[treasury_info.clone(), round_locked_waln_info.clone(), system_program_info.clone()],
-                    &[&[TREASURY_SEED, &[treasury_bump]]],
+                    &[
+                        &[TREASURY_SEED, &[treasury_bump]],
+                        &[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]],
+                    ],
+                )?;
+            } else {
+                if existing_locked_waln_lamports < round_locked_waln_rent {
+                    invoke_signed(
+                        &system_instruction::transfer(
+                            treasury_info.key,
+                            round_locked_waln_info.key,
+                            round_locked_waln_rent - existing_locked_waln_lamports,
+                        ),
+                        &[treasury_info.clone(), round_locked_waln_info.clone(), system_program_info.clone()],
+                        &[&[TREASURY_SEED, &[treasury_bump]]],
+                    )?;
+                }
+                invoke_signed(
+                    &system_instruction::allocate(round_locked_waln_info.key, round_locked_waln_space as u64),
+                    &[round_locked_waln_info.clone(), system_program_info.clone()],
+                    &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
+                )?;
+                invoke_signed(
+                    &system_instruction::assign(round_locked_waln_info.key, &crate::ID),
+                    &[round_locked_waln_info.clone(), system_program_info.clone()],
+                    &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
                 )?;
             }
-            invoke_signed(
-                &system_instruction::allocate(round_locked_waln_info.key, round_locked_waln_space as u64),
-                &[round_locked_waln_info.clone(), system_program_info.clone()],
-                &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
-            )?;
-            invoke_signed(
-                &system_instruction::assign(round_locked_waln_info.key, &crate::ID),
-                &[round_locked_waln_info.clone(), system_program_info.clone()],
-                &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
-            )?;
-        }
 
-        {
-            let mut data = round_locked_waln_info.try_borrow_mut_data()?;
-            data[..8].copy_from_slice(&RoundLockedWaln::DISCRIMINATOR);
-            let rw: &mut RoundLockedWaln =
-                bytemuck::from_bytes_mut(&mut data[8..]);
-            rw.round_index = round_index;
-            rw.count = participant_count;
-            rw.bump = round_locked_waln_bump;
-            rw._pad = [0; 3];
-            for (i, (investor, waln_alloc)) in participant_data.iter().enumerate() {
-                rw.investors[i] = InvestorAlloc {
-                    investor: *investor,
-                    waln_amount: *waln_alloc,
+            {
+                let entries: Vec<InvestorAlloc> = participant_data
+                    .iter()
+                    .map(|(investor, waln_amount)| InvestorAlloc {
+                        investor: *investor,
+                        waln_amount: *waln_amount,
+                    })
+                    .collect();
+                let rlw = RoundLockedWaln {
+                    round_index,
+                    bump: round_locked_waln_bump,
                     unlock: unlock_timestamp,
-                    claimed: 0,
-                    _pad: [0; 7],
+                    remaining_to_claim: claimable_participant_count,
+                    investors: entries,
                 };
+                let mut data = round_locked_waln_info.try_borrow_mut_data()?;
+                let mut writer: &mut [u8] = &mut data;
+                rlw.try_serialize(&mut writer)?;
             }
         }
+
+        const ALLOC_LOG_LEN: usize = 8 + 8 + 32 + 8 + 8 + 8;
+        let alloc_disc = InvestorAllocated::DISCRIMINATOR;
+        let round_index_le = round_index.to_le_bytes();
+        let unlock_le = unlock_timestamp.to_le_bytes();
+
+        for (investor, waln_amount) in participant_data.iter() {
+            let usdc_spent_for = u64::try_from(
+                (*waln_amount as u128)
+                    .checked_mul(floor_price_usdc as u128)
+                    .ok_or(FloorError::ArithmeticOverflow)?
+                    .checked_div(waln_scale)
+                    .ok_or(FloorError::ArithmeticOverflow)?,
+            )
+            .map_err(|_| FloorError::ArithmeticOverflow)?;
+
+            let mut buf = [0u8; ALLOC_LOG_LEN];
+            buf[0..8].copy_from_slice(alloc_disc);
+            buf[8..16].copy_from_slice(&round_index_le);
+            buf[16..48].copy_from_slice(investor.as_ref());
+            buf[48..56].copy_from_slice(&waln_amount.to_le_bytes());
+            buf[56..64].copy_from_slice(&usdc_spent_for.to_le_bytes());
+            buf[64..72].copy_from_slice(&unlock_le);
+
+            sol_log_data(&[&buf]);
+        }
+
+        emit!(RoundClosed {
+            round_index,
+            waln_purchased: total_waln_purchased,
+            usdc_spent: total_usdc_spent,
+            participant_count,
+            unlock: unlock_timestamp,
+        });
 
         let round_record_space = 8 + RoundRecord::INIT_SPACE;
         let round_record_rent = Rent::get()?.minimum_balance(round_record_space);
@@ -481,7 +548,7 @@ pub fn handler<'info>(
 
         {
             let mut rr_data = round_record_info.try_borrow_mut_data()?;
-            rr_data[..8].copy_from_slice(&RoundRecord::DISCRIMINATOR);
+            rr_data[..8].copy_from_slice(RoundRecord::DISCRIMINATOR);
             let record = RoundRecord {
                 round_index,
                 triggered_at: clock.unix_timestamp,
@@ -534,6 +601,10 @@ pub fn handler<'info>(
                 }
                 Err(ref e) if e == &FloorError::NoEligibleInvestors.into() => {
                     msg!("Auto-start skipped: no eligible investors");
+                    state.total_usdc_locked_for_round = 0;
+                }
+                Err(ref e) if e == &FloorError::InvalidParameter.into() => {
+                    msg!("Auto-start skipped: round cap would be zero (round_size * floor_price < 10^decimals)");
                     state.total_usdc_locked_for_round = 0;
                 }
                 Err(e) => {
