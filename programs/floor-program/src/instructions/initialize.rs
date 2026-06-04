@@ -1,6 +1,12 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
+use spl_token_2022::extension::{
+    transfer_fee::TransferFeeConfig, BaseStateWithExtensions, StateWithExtensions,
+};
+use spl_token_2022::state::Mint as SplMint;
 
+use crate::errors::FloorError;
+use crate::instructions::start_round::require_viable_round_params;
 use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, USDC_VAULT_SEED, WALN_VAULT_SEED};
 use crate::state::{InvestorPool, ProgramState};
 
@@ -56,6 +62,12 @@ pub struct Initialize<'info> {
     pub usdc_token_program: Interface<'info, TokenInterface>,
     #[account(address = anchor_spl::token_2022::ID)]
     pub waln_token_program: Interface<'info, TokenInterface>,
+
+    #[account(constraint = program.programdata_address()? == Some(program_data.key()) @ FloorError::Unauthorized)]
+    pub program: Program<'info, crate::program::FloorProgram>,
+
+    #[account(constraint = program_data.upgrade_authority_address == Some(admin.key()) @ FloorError::Unauthorized)]
+    pub program_data: Account<'info, ProgramData>,
 }
 
 pub fn handler(
@@ -67,6 +79,19 @@ pub fn handler(
     use crate::errors::FloorError;
     require!(floor_price_usdc > 0, FloorError::InvalidParameter);
     require!(round_size_waln > 0, FloorError::InvalidParameter);
+    require_viable_round_params(round_size_waln, floor_price_usdc, ctx.accounts.waln_mint.decimals)?;
+    require!(lock_period_seconds >= 0, FloorError::InvalidParameter);
+
+    {
+        let waln_mint_info = ctx.accounts.waln_mint.to_account_info();
+        let waln_mint_data = waln_mint_info.try_borrow_data()?;
+        let waln_mint_with_ext = StateWithExtensions::<SplMint>::unpack(&waln_mint_data)
+            .map_err(|_| error!(FloorError::InvalidParameter))?;
+        require!(
+            waln_mint_with_ext.get_extension::<TransferFeeConfig>().is_err(),
+            FloorError::InvalidParameter
+        );
+    }
 
     let mut state = ctx.accounts.contract_state.load_init()?;
     state.admin = ctx.accounts.admin.key();
@@ -77,12 +102,16 @@ pub fn handler(
     state.floor_price_usdc = floor_price_usdc;
     state.current_round_floor_price = floor_price_usdc;
     state.current_round_size_waln = round_size_waln;
+    state.current_round_lock_period = lock_period_seconds;
+    state.current_round_usdc_spent = 0;
     state.round_size_waln = round_size_waln;
     state.lock_period_seconds = lock_period_seconds;
+    state.current_round_lock_period = lock_period_seconds;
     state.current_round_waln = 0;
     state.total_usdc_in_lobby = 0;
     state.round_count = 0;
-    state.paused = 0;
+    state.sell_paused = 0;
+    state.frozen = 0;
     state.round_started = 0;
     state.bump = ctx.bumps.contract_state;
     state.usdc_vault_bump = ctx.bumps.usdc_vault;

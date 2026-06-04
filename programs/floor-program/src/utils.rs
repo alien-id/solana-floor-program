@@ -57,14 +57,13 @@ pub fn validate_hook_accounts(
     mint: &Pubkey,
     owner: &Pubkey,
     hook_program_id: &Pubkey,
-    bumps: [u8; 4],
 ) -> Result<()> {
     require!(remaining.len() == 8, FloorError::InvalidHookAccountsCount);
 
-    let expected_config = Pubkey::create_program_address(
-        &[b"config", mint.as_ref(), &[bumps[0]]],
+    let (expected_config, _) = Pubkey::find_program_address(
+        &[b"config", mint.as_ref()],
         hook_program_id,
-    ).map_err(|_| error!(FloorError::InvalidHookAccounts))?;
+    );
     require!(remaining[0].key() == expected_config, FloorError::InvalidHookAccounts);
 
     let config_data = remaining[0].try_borrow_data()?;
@@ -78,24 +77,24 @@ pub fn validate_hook_accounts(
     require!(remaining[2].key() == schema, FloorError::InvalidHookAccounts);
     require!(remaining[3].key() == sas_program, FloorError::InvalidHookAccounts);
 
-    let expected_attestation = Pubkey::create_program_address(
-        &[b"attestation", credential.as_ref(), schema.as_ref(), owner.as_ref(), &[bumps[1]]],
+    let (expected_attestation, _) = Pubkey::find_program_address(
+        &[b"attestation", credential.as_ref(), schema.as_ref(), owner.as_ref()],
         &sas_program,
-    ).map_err(|_| error!(FloorError::InvalidHookAccounts))?;
+    );
     require!(remaining[4].key() == expected_attestation, FloorError::InvalidHookAccounts);
 
-    let expected_whitelist = Pubkey::create_program_address(
-        &[b"whitelist", mint.as_ref(), owner.as_ref(), &[bumps[2]]],
+    let (expected_whitelist, _) = Pubkey::find_program_address(
+        &[b"whitelist", mint.as_ref(), owner.as_ref()],
         hook_program_id,
-    ).map_err(|_| error!(FloorError::InvalidHookAccounts))?;
+    );
     require!(remaining[5].key() == expected_whitelist, FloorError::InvalidHookAccounts);
 
     require!(remaining[6].key() == *hook_program_id, FloorError::InvalidHookAccounts);
 
-    let expected_extra_meta = Pubkey::create_program_address(
-        &[b"extra-account-metas", mint.as_ref(), &[bumps[3]]],
+    let (expected_extra_meta, _) = Pubkey::find_program_address(
+        &[b"extra-account-metas", mint.as_ref()],
         hook_program_id,
-    ).map_err(|_| error!(FloorError::InvalidHookAccounts))?;
+    );
     require!(remaining[7].key() == expected_extra_meta, FloorError::InvalidHookAccounts);
 
     Ok(())

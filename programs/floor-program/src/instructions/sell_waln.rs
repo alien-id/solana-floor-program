@@ -17,6 +17,7 @@ use crate::seeds::{
 };
 use crate::state::{
     InvestorAllocated, InvestorPool, ProgramState, RoundClosed, RoundLockedWaln, RoundRecord,
+    MIN_SELL_WALN,
 };
 use crate::utils::{get_hook_program_id, validate_hook_accounts};
 
@@ -104,7 +105,7 @@ pub fn handler<'info>(
     mut ctx: Context<'_, '_, 'info, 'info, SellWaln<'info>>,
     round_index: u64,
     waln_amount: u64,
-    hook_bumps: [u8; 4],
+    _hook_bumps: [u8; 4],
 ) -> Result<()> {
     let waln_decimals = ctx.accounts.waln_mint.decimals;
     let usdc_decimals = ctx.accounts.usdc_mint.decimals;
@@ -115,7 +116,8 @@ pub fn handler<'info>(
 
     {
         let state = ctx.accounts.contract_state.load()?;
-        require!(state.paused == 0, FloorError::ContractPaused);
+        require!(state.frozen == 0, FloorError::ContractFrozen);
+        require!(state.sell_paused == 0, FloorError::SellPaused);
         require!(waln_amount > 0, FloorError::ZeroAmount);
         require!(state.round_started == 1, FloorError::InvalidParameter);
         require!(state.round_count == round_index, FloorError::InvalidParameter);
@@ -139,6 +141,25 @@ pub fn handler<'info>(
             waln_amount <= remaining_in_round,
             FloorError::SellAmountExceedsRound
         );
+
+        let is_completing = waln_amount == remaining_in_round;
+        require!(
+            waln_amount >= MIN_SELL_WALN || is_completing,
+            FloorError::SellAmountTooSmall
+        );
+
+        let post_sale_remaining = remaining_in_round
+            .checked_sub(waln_amount)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+        if post_sale_remaining > 0 {
+            let local_waln_scale = 10_u128.pow(waln_decimals as u32);
+            let post_sale_usdc = (post_sale_remaining as u128)
+                .checked_mul(floor_price_usdc as u128)
+                .ok_or(FloorError::ArithmeticOverflow)?
+                .checked_div(local_waln_scale)
+                .ok_or(FloorError::ArithmeticOverflow)?;
+            require!(post_sale_usdc > 0, FloorError::SellLeavesUnpayableDust);
+        }
     }
 
     let waln_scale = 10_u128.pow(waln_decimals as u32);
@@ -159,7 +180,6 @@ pub fn handler<'info>(
             &ctx.accounts.waln_mint.key(),
             &ctx.accounts.seller.key(),
             &hook_program_id,
-            hook_bumps,
         )?;
         hook_offset = 8;
     } else {
@@ -219,6 +239,10 @@ pub fn handler<'info>(
 
     let close_round = {
         let mut state = ctx.accounts.contract_state.load_mut()?;
+        state.current_round_usdc_spent = state
+            .current_round_usdc_spent
+            .checked_add(usdc_out)
+            .ok_or(FloorError::ArithmeticOverflow)?;
         state.current_round_waln = state
             .current_round_waln
             .checked_add(waln_amount)

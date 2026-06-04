@@ -5,7 +5,7 @@ use crate::errors::FloorError;
 use crate::seeds::{
     CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, ROUND_LOCKED_WALN_SEED, TREASURY_SEED,
 };
-use crate::state::{InvestorAlloc, InvestorPool, ProgramState, RoundLockedWaln};
+use crate::state::{InvestorAlloc, InvestorPool, ProgramState, RoundLockedWaln, MIN_SELL_WALN};
 
 #[derive(Accounts)]
 #[instruction(round_index: u64)]
@@ -52,7 +52,7 @@ pub fn handler(ctx: Context<StartRound>, round_index: u64) -> Result<()> {
     let waln_decimals;
     {
         let state = ctx.accounts.contract_state.load()?;
-        require!(state.paused == 0, FloorError::ContractPaused);
+        require!(state.frozen == 0, FloorError::ContractFrozen);
         require!(state.round_started == 0, FloorError::InvalidParameter);
         require!(state.round_count == round_index, FloorError::InvalidParameter);
         round_size_waln = state.round_size_waln;
@@ -101,7 +101,7 @@ pub fn handler(ctx: Context<StartRound>, round_index: u64) -> Result<()> {
                 .ok_or(FloorError::ArithmeticOverflow)?
                 .checked_div(total_aat_volume as u128)
                 .ok_or(FloorError::ArithmeticOverflow)?;
-            if (r.usdc_deposited as u128) < required {
+            if required == 0 || (r.usdc_deposited as u128) < required {
                 eligible[i] = false;
                 changed = true;
             }
@@ -151,6 +151,46 @@ pub fn handler(ctx: Context<StartRound>, round_index: u64) -> Result<()> {
             .ok_or(FloorError::ArithmeticOverflow)?;
     }
     require!(!entries.is_empty(), FloorError::NoEligibleInvestors);
+
+    let gap_u128 = round_cap_usdc_u128.saturating_sub(total_usdc_locked as u128);
+    if gap_u128 > 0 {
+        let gap = u64::try_from(gap_u128).map_err(|_| FloorError::ArithmeticOverflow)?;
+        for (i, r) in pool.investors.iter_mut().enumerate() {
+            if !eligible[i] {
+                continue;
+            }
+            if r.usdc_deposited >= gap {
+                r.usdc_deposited = r
+                    .usdc_deposited
+                    .checked_sub(gap)
+                    .ok_or(FloorError::ArithmeticOverflow)?;
+                r.usdc_locked_current_round = r
+                    .usdc_locked_current_round
+                    .checked_add(gap)
+                    .ok_or(FloorError::ArithmeticOverflow)?;
+                total_usdc_locked = total_usdc_locked
+                    .checked_add(gap)
+                    .ok_or(FloorError::ArithmeticOverflow)?;
+
+                let extra_waln = u64::try_from(
+                    (gap as u128)
+                        .checked_mul(waln_scale)
+                        .ok_or(FloorError::ArithmeticOverflow)?
+                        .checked_div(floor_price_usdc as u128)
+                        .ok_or(FloorError::ArithmeticOverflow)?,
+                )
+                .map_err(|_| FloorError::ArithmeticOverflow)?;
+
+                if let Some(entry) = entries.iter_mut().find(|e| e.investor == r.investor) {
+                    entry.waln_amount = entry
+                        .waln_amount
+                        .checked_add(extra_waln)
+                        .ok_or(FloorError::ArithmeticOverflow)?;
+                }
+                break;
+            }
+        }
+    }
 
     entries.sort_unstable_by(|a, b| a.investor.to_bytes().cmp(&b.investor.to_bytes()));
 
@@ -205,5 +245,21 @@ pub fn handler(ctx: Context<StartRound>, round_index: u64) -> Result<()> {
     state.total_usdc_locked_for_round = total_usdc_locked;
     state.round_started = 1;
 
+    Ok(())
+}
+
+pub fn require_viable_round_params(
+    round_size_waln: u64,
+    floor_price_usdc: u64,
+    waln_decimals: u8,
+) -> Result<()> {
+    let waln_scale = 10_u128.pow(waln_decimals as u32);
+    let round_cap_usdc = (round_size_waln as u128)
+        .checked_mul(floor_price_usdc as u128)
+        .ok_or(FloorError::ArithmeticOverflow)?
+        .checked_div(waln_scale)
+        .ok_or(FloorError::ArithmeticOverflow)?;
+    require!(round_cap_usdc > 0, FloorError::InvalidParameter);
+    require!(round_size_waln >= MIN_SELL_WALN, FloorError::InvalidParameter);
     Ok(())
 }

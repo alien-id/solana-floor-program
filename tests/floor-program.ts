@@ -584,7 +584,7 @@ describe("floor-program", () => {
             assert.ok(state.floorPriceUsdc.eq(FLOOR_PRICE));
             assert.ok(state.roundSizeWaln.eq(ROUND_SIZE));
             assert.ok(state.lockPeriodSeconds.eq(LOCK_PERIOD));
-            assert.equal(state.paused, 0);
+            assert.equal(state.sellPaused, 0);
             assert.equal(state.roundStarted, 0);
             assert.ok(state.roundCount.eqn(0));
         });
@@ -771,11 +771,12 @@ describe("floor-program", () => {
         });
 
         it("set_round_size updates round size", async () => {
+            const newRoundSize = new BN(300 * WALN_UNIT);
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setRoundSize(new BN(200)))
+                new Transaction().add(await sdk.admin(admin.publicKey).setRoundSize(newRoundSize))
             );
             let state = await sdk.program.account.programState.fetch(contractState);
-            assert.ok(state.roundSizeWaln.eqn(200));
+            assert.ok(state.roundSizeWaln.eq(newRoundSize));
 
             // restore
             await provider.sendAndConfirm(
@@ -798,16 +799,16 @@ describe("floor-program", () => {
 
         it("set_paused pauses and unpauses", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
             let state = await sdk.program.account.programState.fetch(contractState);
-            assert.equal(state.paused, 1);
+            assert.equal(state.sellPaused, 1);
 
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
             );
             state = await sdk.program.account.programState.fetch(contractState);
-            assert.equal(state.paused, 0);
+            assert.equal(state.sellPaused, 0);
         });
 
         it("fund treasury by admin", async () => {
@@ -1094,7 +1095,7 @@ describe("floor-program", () => {
 
         it("allows deposit when contract is paused", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
             try {
                 await provider.sendAndConfirm(
@@ -1111,7 +1112,7 @@ describe("floor-program", () => {
                 );
             } finally {
                 await provider.sendAndConfirm(
-                    new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                    new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
                 );
                 await provider.sendAndConfirm(
                     new Transaction().add(
@@ -1145,8 +1146,10 @@ describe("floor-program", () => {
             } catch (e: any) {
                 assert.ok(
                     e.toString().includes("NoAatNft") ||
-                    e.toString().includes("InvalidAatNft"),
-                    `expected NoAatNft or InvalidAatNft, got: ${e.toString()}`
+                    e.toString().includes("InvalidAatNft") ||
+                    e.toString().includes("AccountNotInitialized") ||
+                    e.toString().includes("3012"),
+                    `expected foreign AAT NFT deposit to be rejected, got: ${e.toString()}`
                 );
             }
         });
@@ -1198,7 +1201,7 @@ describe("floor-program", () => {
 
         it("allows withdrawal when contract is paused", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
             try {
                 await provider.sendAndConfirm(
@@ -1214,7 +1217,7 @@ describe("floor-program", () => {
                 );
             } finally {
                 await provider.sendAndConfirm(
-                    new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                    new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
                 );
                 await provider.sendAndConfirm(
                     new Transaction().add(
@@ -1841,10 +1844,10 @@ describe("floor-program", () => {
             const stateAfterStart = await sdk.program.account.programState.fetch(contractState);
             assert.equal(stateAfterStart.roundStarted, 1);
 
-            // investor1: min(5e9, floor(20e6 * 100000 / 150000)) = 13_333_333
+            // investor1: floor(20e6 * 100000 / 150000) = 13_333_333, +1 gap/dust redistribution = 13_333_334
             const entry1AfterStart = await sdk.fetchInvestorRecord(investor1.publicKey);
-            assert.ok(entry1AfterStart!.usdcLockedCurrentRound.eq(new BN(13_333_333)));
-            assert.ok(entry1AfterStart!.usdcDeposited.eq(new BN(4_986_666_667)));
+            assert.ok(entry1AfterStart!.usdcLockedCurrentRound.eq(new BN(13_333_334)));
+            assert.ok(entry1AfterStart!.usdcDeposited.eq(new BN(4_986_666_666)));
 
             // investor2: min(5e9, floor(20e6 * 50000 / 150000)) = 6_666_666
             const entry2AfterStart = await sdk.fetchInvestorRecord(investor2.publicKey);
@@ -1919,7 +1922,7 @@ describe("floor-program", () => {
 
         it("rejects sell when contract is paused", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
 
             try {
@@ -1940,10 +1943,10 @@ describe("floor-program", () => {
                 );
                 assert.fail("should have thrown");
             } catch (e: any) {
-                assert.include(e.toString(), "ContractPaused");
+                assert.include(e.toString(), "SellPaused");
             } finally {
                 await provider.sendAndConfirm(
-                    new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                    new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
                 );
             }
         });
@@ -1994,8 +1997,8 @@ describe("floor-program", () => {
             // ---- verify RoundRecord created ----
             const rr = await sdk.fetchRoundRecord(round0);
             assert.equal(rr.roundIndex, 0n);
-            assert.equal(rr.walnPurchased, 199_999_990_000n);
-            assert.equal(rr.usdcSpent, 19_999_999n);
+            assert.equal(rr.walnPurchased, 200_000_000_000n);
+            assert.equal(rr.usdcSpent, 20_000_000n);
             assert.equal(rr.totalAatVolumeAtTrigger, 150000n);
             assert.equal(rr.participantCount, 2);
 
@@ -2008,7 +2011,7 @@ describe("floor-program", () => {
             // ---- verify RoundLockedWaln records (finalized) ----
             const lw1 = await sdk.fetchInvestorAlloc(round0, investor1.publicKey);
             assert.ok(lw1!.investor.equals(investor1.publicKey));
-            assert.equal(lw1!.walnAmount, 133333330000n);
+            assert.equal(lw1!.walnAmount, 133333340000n);
 
             const lw2 = await sdk.fetchInvestorAlloc(round0, investor2.publicKey);
             assert.ok(lw2!.investor.equals(investor2.publicKey));
@@ -2029,8 +2032,8 @@ describe("floor-program", () => {
 
             assert.ok(stateAfterTrigger.roundCount.eqn(1));
             const entry1Pre = await sdk.fetchInvestorRecord(investor1.publicKey);
-            assert.ok(entry1Pre!.usdcCommitted.eq(new BN(13_333_333)));
-            assert.ok(entry1Pre!.walnPurchasedTotal.eq(new BN("133333330000")));
+            assert.ok(entry1Pre!.usdcCommitted.eq(new BN(13_333_334)));
+            assert.ok(entry1Pre!.walnPurchasedTotal.eq(new BN("133333340000")));
             const entry2Pre = await sdk.fetchInvestorRecord(investor2.publicKey);
             assert.ok(entry2Pre!.usdcCommitted.eq(new BN(6_666_666)));
             assert.ok(entry2Pre!.walnPurchasedTotal.eq(new BN("66666660000")));
@@ -2054,8 +2057,8 @@ describe("floor-program", () => {
             assert.equal(state.roundStarted, 1);
 
             const entry1 = await sdk.fetchInvestorRecord(investor1.publicKey);
-            assert.ok(entry1!.usdcLockedCurrentRound.eq(new BN(13_333_333)));
-            assert.ok(entry1!.usdcDeposited.eq(new BN(4_973_333_334)));
+            assert.ok(entry1!.usdcLockedCurrentRound.eq(new BN(13_333_334)));
+            assert.ok(entry1!.usdcDeposited.eq(new BN(4_973_333_332)));
 
             const entry2 = await sdk.fetchInvestorRecord(investor2.publicKey);
             assert.ok(entry2!.usdcLockedCurrentRound.eq(new BN(6_666_666)));
@@ -2089,15 +2092,15 @@ describe("floor-program", () => {
             );
 
             const walnAfter = await getTokenBalance(provider, investor1WalnAcc, TOKEN_2022_PROGRAM_ID);
-            assert.equal(walnAfter - walnBefore, 133_333_330_000n);
+            assert.equal(walnAfter - walnBefore, 133_333_340_000n);
 
             const lw = await sdk.fetchInvestorAlloc(round0, investor1.publicKey);
             assert.equal(lw!.walnAmount, 0n, "walnAmount should be 0 after claim");
         });
 
-        it("allows claim attempt when contract is paused (fails for other reason, not ContractPaused)", async () => {
+        it("allows claim attempt when contract is paused (fails for other reason, not SellPaused)", async () => {
             await provider.sendAndConfirm(
-                new Transaction().add(await sdk.admin(admin.publicKey).setPaused(true))
+                new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(true))
             );
             try {
                 await provider.sendAndConfirm(
@@ -2117,7 +2120,7 @@ describe("floor-program", () => {
                 assert.include(e.toString(), "AlreadyClaimed");
             } finally {
                 await provider.sendAndConfirm(
-                    new Transaction().add(await sdk.admin(admin.publicKey).setPaused(false))
+                    new Transaction().add(await sdk.admin(admin.publicKey).setSellPaused(false))
                 );
             }
         });
@@ -2269,8 +2272,8 @@ describe("floor-program", () => {
                 entry2!.usdcLockedCurrentRound.toNumber();
 
             assert.ok(
-                state.totalUsdcInLobby.eq(new BN(9_980_000_001)),
-                `expected totalUsdcInLobby=9980000001, got ${state.totalUsdcInLobby.toString()}`
+                state.totalUsdcInLobby.eq(new BN(9_980_000_000)),
+                `expected totalUsdcInLobby=9980000000, got ${state.totalUsdcInLobby.toString()}`
             );
             assert.equal(
                 state.totalUsdcInLobby.toNumber(),
@@ -2827,14 +2830,11 @@ describe("floor-program", () => {
             console.log(`    [rent] round_locked_waln (dust round ${dustRoundIdx}) lamports: ${rlwInfoDust!.lamports}, size: ${rlwInfoDust!.data.length} bytes`);
         });
 
-        it("investors receive dust bonus from previous round's carryover", async () => {
+        it("gap redistribution fully allocates the round and leaves zero carryover", async () => {
             const stateBefore = await sdk.program.account.programState.fetch(contractState);
-            const dustCarryover = BigInt(stateBefore.walnDustCarryover.toString());
-            const totalUsdcLocked = BigInt(stateBefore.totalUsdcLockedForRound.toString());
+            const oldDust = BigInt(stateBefore.walnDustCarryover.toString());
             const floorPrice = BigInt(stateBefore.currentRoundFloorPrice.toString());
             const walnScale = BigInt(WALN_UNIT);
-
-            assert.ok(dustCarryover > 0n, "dust carryover should be > 0 from previous rounds");
 
             const entry1 = await sdk.fetchInvestorRecord(investor1.publicKey);
             const entry2 = await sdk.fetchInvestorRecord(investor2.publicKey);
@@ -2844,6 +2844,7 @@ describe("floor-program", () => {
             const roundIndex = stateBefore.roundCount;
             const roundBn = new BN(roundIndex.toNumber());
             const [roundRecord] = sdk.roundRecordPda(roundBn);
+            const walnInRound = BigInt(stateBefore.currentRoundSizeWaln.toString());
 
             await provider.sendAndConfirm(
                 new Transaction().add(
@@ -2868,51 +2869,35 @@ describe("floor-program", () => {
             const lw1 = await sdk.fetchInvestorAlloc(roundBn, investor1.publicKey);
             const lw2 = await sdk.fetchInvestorAlloc(roundBn, investor2.publicKey);
 
+            // start_round folds the leftover usdc "gap" into each investor's locked
+            // amount in-round, so the per-investor allocation equals base(locked) with
+            // no separate carryover bonus.
             const base1 = locked1 * walnScale / floorPrice;
             const base2 = locked2 * walnScale / floorPrice;
+            assert.equal(lw1!.walnAmount, base1, "investor1 alloc equals base(locked)");
+            assert.equal(lw2!.walnAmount, base2, "investor2 alloc equals base(locked)");
 
-            const inv1GotDust = lw1!.walnAmount > base1;
-            const inv2GotDust = lw2!.walnAmount > base2;
-
-            assert.ok(
-                inv1GotDust !== inv2GotDust,
-                "exactly one investor should receive the dust bonus"
+            // Gap redistribution guarantees the entire round size is allocated with
+            // nothing lost to integer rounding.
+            assert.equal(
+                lw1!.walnAmount + lw2!.walnAmount,
+                walnInRound,
+                "allocations must sum to the full round size"
             );
-
-            if (inv1GotDust) {
-                assert.equal(
-                    lw1!.walnAmount,
-                    base1 + dustCarryover,
-                    "dust winner (investor1) should receive base + full dust"
-                );
-                assert.equal(
-                    lw2!.walnAmount,
-                    base2,
-                    "investor2 should receive only base allocation"
-                );
-            } else {
-                assert.equal(
-                    lw2!.walnAmount,
-                    base2 + dustCarryover,
-                    "dust winner (investor2) should receive base + full dust"
-                );
-                assert.equal(
-                    lw1!.walnAmount,
-                    base1,
-                    "investor1 should receive only base allocation"
-                );
-            }
 
             const stateAfter = await sdk.program.account.programState.fetch(contractState);
             const rr = await sdk.fetchRoundRecord(roundBn);
             const totalWalnPurchased = rr.walnPurchased;
             const newDust = BigInt(stateAfter.walnDustCarryover.toString());
-            const walnInRound = BigInt(stateBefore.currentRoundSizeWaln.toString());
 
+            assert.equal(totalWalnPurchased, walnInRound, "round fully purchased");
+            assert.equal(newDust, 0n, "no carryover dust after gap redistribution");
+
+            // Dust invariant still holds: purchased + newDust == walnInRound + oldDust.
             assert.equal(
                 totalWalnPurchased + newDust,
-                walnInRound + dustCarryover,
-                "dust invariant must hold for round with bonus distribution"
+                walnInRound + oldDust,
+                "dust invariant must hold"
             );
         });
     });
@@ -3248,6 +3233,7 @@ describe("floor-program", () => {
 
             const roundIdx = new BN(stateBefore.roundCount.toString());
             const [roundRecord] = sdk.roundRecordPda(roundIdx);
+            const [roundLockedWaln] = sdk.roundLockedWalnPda(roundIdx);
 
             const roundSizeWaln = new BN(stateBefore.currentRoundSizeWaln.toString());
 

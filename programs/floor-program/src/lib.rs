@@ -65,8 +65,12 @@ pub mod floor_program {
         admin::set_investor_usdc_unlock(ctx, investor, new_unlock_ts)
     }
 
-    pub fn set_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
-        admin::set_paused(ctx, paused)
+    pub fn set_sell_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
+        admin::set_sell_paused(ctx, paused)
+    }
+
+    pub fn set_frozen(ctx: Context<AdminOnly>, frozen: bool) -> Result<()> {
+        admin::set_frozen(ctx, frozen)
     }
 
     pub fn cancel_round(ctx: Context<CancelRound>, round_index: u64) -> Result<()> {
@@ -77,8 +81,18 @@ pub mod floor_program {
         start_round::handler(ctx, round_index)
     }
 
+    pub fn close_round<'info>(
+        ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>,
+    ) -> Result<()> {
+        close_round::close_round(ctx)
+    }
+
     pub fn fund_treasury(ctx: Context<FundTreasury>, amount: u64) -> Result<()> {
         admin::fund_treasury(ctx, amount)
+    }
+
+    pub fn withdraw_treasury(ctx: Context<WithdrawTreasury>, amount: u64) -> Result<()> {
+        admin::withdraw_treasury(ctx, amount)
     }
 
     pub fn deposit_usdc(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
@@ -101,9 +115,8 @@ pub mod floor_program {
     pub fn claim_waln<'info>(
         ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>,
         round_index: u64,
-        hook_bumps: [u8; 4],
     ) -> Result<()> {
-        claim_waln::handler(ctx, round_index, hook_bumps)
+        claim_waln::handler(ctx, round_index)
     }
 
     pub fn mint_aat_nft(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
@@ -127,5 +140,9 @@ pub mod floor_program {
 
     pub fn accept_authority(ctx: Context<AcceptAuthority>) -> Result<()> {
         transfer_authority::accept_authority(ctx)
+    }
+
+    pub fn close_round_record(ctx: Context<CloseRoundRecord>, round_index: u64) -> Result<()> {
+        close_round::close_round_record(ctx, round_index)
     }
 }

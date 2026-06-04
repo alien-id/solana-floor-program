@@ -1,9 +1,14 @@
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{program::invoke, system_instruction};
-
 use crate::errors::FloorError;
-use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, ROUND_LOCKED_WALN_SEED, TREASURY_SEED};
+use crate::instructions::start_round::require_viable_round_params;
+use crate::seeds::{
+    CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, ROUND_LOCKED_WALN_SEED, TREASURY_SEED,
+};
 use crate::state::{InvestorPool, ProgramState, RoundLockedWaln};
+use anchor_lang::prelude::*;
+use anchor_lang::solana_program::{
+    program::{invoke, invoke_signed},
+    system_instruction,
+};
 
 #[derive(Accounts)]
 pub struct AdminOnly<'info> {
@@ -21,6 +26,7 @@ pub struct AdminOnly<'info> {
 pub fn set_floor_price(ctx: Context<AdminOnly>, new_price_usdc: u64) -> Result<()> {
     require!(new_price_usdc > 0, FloorError::InvalidParameter);
     let mut state = ctx.accounts.contract_state.load_mut()?;
+    require_viable_round_params(state.round_size_waln, new_price_usdc, state.waln_decimals)?;
     state.floor_price_usdc = new_price_usdc;
     Ok(())
 }
@@ -28,6 +34,11 @@ pub fn set_floor_price(ctx: Context<AdminOnly>, new_price_usdc: u64) -> Result<(
 pub fn set_round_size(ctx: Context<AdminOnly>, new_round_size_waln: u64) -> Result<()> {
     require!(new_round_size_waln > 0, FloorError::InvalidParameter);
     let mut state = ctx.accounts.contract_state.load_mut()?;
+    require_viable_round_params(
+        new_round_size_waln,
+        state.floor_price_usdc,
+        state.waln_decimals,
+    )?;
     state.round_size_waln = new_round_size_waln;
     Ok(())
 }
@@ -80,9 +91,15 @@ pub fn set_investor_usdc_unlock(
     Ok(())
 }
 
-pub fn set_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
+pub fn set_sell_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
     let mut state = ctx.accounts.contract_state.load_mut()?;
-    state.paused = if paused { 1 } else { 0 };
+    state.sell_paused = if paused { 1 } else { 0 };
+    Ok(())
+}
+
+pub fn set_frozen(ctx: Context<AdminOnly>, frozen: bool) -> Result<()> {
+    let mut state = ctx.accounts.contract_state.load_mut()?;
+    state.frozen = if frozen { 1 } else { 0 };
     Ok(())
 }
 
@@ -99,6 +116,29 @@ pub struct FundTreasury<'info> {
     pub contract_state: AccountLoader<'info, ProgramState>,
 
     /// CHECK: Treasury PDA — system-owned, receives SOL for round account rent
+    #[account(
+        mut,
+        seeds = [TREASURY_SEED],
+        bump,
+    )]
+    pub treasury: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct WithdrawTreasury<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+
+    #[account(
+        seeds = [CONTRACT_STATE_SEED],
+        bump,
+        constraint = contract_state.load()?.admin == admin.key() @ FloorError::Unauthorized,
+    )]
+    pub contract_state: AccountLoader<'info, ProgramState>,
+
+    /// CHECK: Treasury PDA — system-owned, holds SOL for round account rent
     #[account(
         mut,
         seeds = [TREASURY_SEED],
@@ -153,6 +193,7 @@ pub fn cancel_round(ctx: Context<CancelRound>, round_index: u64) -> Result<()> {
         require!(state.round_count == round_index, FloorError::InvalidParameter);
         state.round_started = 0;
         state.current_round_waln = 0;
+        state.current_round_usdc_spent = 0;
         state.total_usdc_locked_for_round = 0;
     }
 
@@ -198,6 +239,31 @@ pub fn fund_treasury(ctx: Context<FundTreasury>, amount: u64) -> Result<()> {
             ctx.accounts.treasury.to_account_info(),
             ctx.accounts.system_program.to_account_info(),
         ],
+    )?;
+
+    Ok(())
+}
+
+pub fn withdraw_treasury(ctx: Context<WithdrawTreasury>, amount: u64) -> Result<()> {
+    require!(amount > 0, FloorError::ZeroAmount);
+    require!(
+        ctx.accounts.treasury.lamports() >= amount,
+        FloorError::InsufficientFunds
+    );
+
+    let treasury_bump = ctx.bumps.treasury;
+    invoke_signed(
+        &system_instruction::transfer(
+            &ctx.accounts.treasury.key(),
+            &ctx.accounts.admin.key(),
+            amount,
+        ),
+        &[
+            ctx.accounts.treasury.to_account_info(),
+            ctx.accounts.admin.to_account_info(),
+            ctx.accounts.system_program.to_account_info(),
+        ],
+        &[&[TREASURY_SEED, &[treasury_bump]]],
     )?;
 
     Ok(())

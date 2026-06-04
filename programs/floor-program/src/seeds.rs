@@ -1,9 +1,9 @@
 pub const CONTRACT_STATE_SEED: &[u8] = b"contract_state";
-pub const LOBBY_ENTRY_SEED: &[u8] = b"lobby_entry";
 pub const USDC_VAULT_SEED: &[u8] = b"usdc_vault";
 pub const WALN_VAULT_SEED: &[u8] = b"waln_vault";
 pub const ROUND_RECORD_SEED: &[u8] = b"round_record";
 pub const ROUND_LOCKED_WALN_SEED: &[u8] = b"round_locked_waln";
 pub const AAT_NFT_SEED: &[u8] = b"aat_nft";
+pub const NFT_AUTHORITY_SEED: &[u8] = b"nft_authority";
 pub const INVESTOR_POOL_SEED: &[u8] = b"investor_pool";
 pub const TREASURY_SEED: &[u8] = b"treasury";

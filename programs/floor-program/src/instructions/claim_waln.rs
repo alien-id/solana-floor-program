@@ -28,7 +28,7 @@ pub struct ClaimWaln<'info> {
     )]
     pub round_locked_waln: Account<'info, RoundLockedWaln>,
 
-    /// CHECK: Treasury PDA — receives rent refund when the round account closes
+    /// CHECK: Treasury PDA — receives the rent refund when the round account closes
     #[account(
         mut,
         seeds = [TREASURY_SEED],
@@ -63,15 +63,12 @@ pub struct ClaimWaln<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn handler<'info>(
-    ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>,
-    _round_index: u64,
-    hook_bumps: [u8; 4],
-) -> Result<()> {
+pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _round_index: u64) -> Result<()> {
     let state_bump;
     let waln_mint_key;
     {
         let state = ctx.accounts.contract_state.load()?;
+        require!(state.frozen == 0, FloorError::ContractFrozen);
         state_bump = state.bump;
         waln_mint_key = state.waln_mint;
     }
@@ -86,11 +83,10 @@ pub fn handler<'info>(
     let should_close;
     {
         let rlw = &mut ctx.accounts.round_locked_waln;
-        require!(rlw.finalized, FloorError::NotYetUnlocked);
-
+        let unlock_ts = rlw.unlock;
         let clock = Clock::get()?;
         require!(
-            clock.unix_timestamp >= rlw.unlock,
+            clock.unix_timestamp >= unlock_ts,
             FloorError::NotYetUnlocked
         );
 
@@ -116,14 +112,12 @@ pub fn handler<'info>(
     let seeds: &[&[u8]] = &[CONTRACT_STATE_SEED, &[state_bump]];
     let signer = &[seeds];
 
-    if !ctx.remaining_accounts.is_empty() {
-        let hook_program_id = get_hook_program_id(&ctx.accounts.waln_mint.to_account_info())?;
+    if let Ok(hook_program_id) = get_hook_program_id(&ctx.accounts.waln_mint.to_account_info()) {
         validate_hook_accounts(
             ctx.remaining_accounts,
             &ctx.accounts.waln_mint.key(),
             &ctx.accounts.contract_state.key(),
             &hook_program_id,
-            hook_bumps,
         )?;
     }
 

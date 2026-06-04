@@ -8,22 +8,16 @@ import {
 } from "./helpers/common";
 
 async function main() {
-  const pausedStr = process.env.PAUSED;
-  if (!pausedStr) throw new Error("Set PAUSED (true or false)");
-
-  const paused = pausedStr === "true";
-
   const envProvider = AnchorProvider.env();
   const payer = loadKeypairFromEnv();
   const provider = createProviderWithPayer(envProvider, payer);
   const sdk = createSdk(provider);
 
-  const ix = await sdk.admin(payer.publicKey).setSellPaused(paused);
+  const ix = await sdk.admin(payer.publicKey).closeRound();
 
   const tx = new Transaction().add(ix);
   const sig = await provider.sendAndConfirm(tx, [payer]);
-  console.log("set_sell_paused tx:", sig);
-  console.log("Sell paused:", paused);
+  console.log("close_round tx:", sig);
 }
 
 main().catch((err) => {
