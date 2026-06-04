@@ -469,6 +469,7 @@ fn finalize_round<'info>(
         .checked_add(1)
         .ok_or(FloorError::ArithmeticOverflow)?;
     state.current_round_waln = 0;
+    state.current_round_usdc_spent = 0;
     state.total_usdc_in_lobby = state
         .total_usdc_in_lobby
         .checked_sub(total_usdc_spent)

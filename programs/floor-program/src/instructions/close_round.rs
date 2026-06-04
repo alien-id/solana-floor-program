@@ -273,45 +273,23 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
         let round_locked_waln_space = RoundLockedWaln::space(participant_data.len());
         let round_locked_waln_rent = Rent::get()?.minimum_balance(round_locked_waln_space);
 
+        require!(
+            round_locked_waln_info.owner == &crate::ID,
+            FloorError::InvalidRemainingAccounts
+        );
         let existing_locked_waln_lamports = round_locked_waln_info.lamports();
-        if existing_locked_waln_lamports == 0 {
+        if existing_locked_waln_lamports < round_locked_waln_rent {
             invoke_signed(
-                &system_instruction::create_account(
+                &system_instruction::transfer(
                     treasury_info.key,
                     round_locked_waln_info.key,
-                    round_locked_waln_rent,
-                    round_locked_waln_space as u64,
-                    &crate::ID,
+                    round_locked_waln_rent - existing_locked_waln_lamports,
                 ),
                 &[treasury_info.clone(), round_locked_waln_info.clone(), system_program_info.clone()],
-                &[
-                    &[TREASURY_SEED, &[treasury_bump]],
-                    &[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]],
-                ],
-            )?;
-        } else {
-            if existing_locked_waln_lamports < round_locked_waln_rent {
-                invoke_signed(
-                    &system_instruction::transfer(
-                        treasury_info.key,
-                        round_locked_waln_info.key,
-                        round_locked_waln_rent - existing_locked_waln_lamports,
-                    ),
-                    &[treasury_info.clone(), round_locked_waln_info.clone(), system_program_info.clone()],
-                    &[&[TREASURY_SEED, &[treasury_bump]]],
-                )?;
-            }
-            invoke_signed(
-                &system_instruction::allocate(round_locked_waln_info.key, round_locked_waln_space as u64),
-                &[round_locked_waln_info.clone(), system_program_info.clone()],
-                &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
-            )?;
-            invoke_signed(
-                &system_instruction::assign(round_locked_waln_info.key, &crate::ID),
-                &[round_locked_waln_info.clone(), system_program_info.clone()],
-                &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
+                &[&[TREASURY_SEED, &[treasury_bump]]],
             )?;
         }
+        round_locked_waln_info.resize(round_locked_waln_space)?;
 
         let entries: Vec<InvestorAlloc> = participant_data
             .iter()
