@@ -33,6 +33,10 @@ const TOKEN_2022_PROGRAM_ID = new PublicKey(
   "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 );
 
+const BPF_LOADER_UPGRADEABLE_PROGRAM_ID = new PublicKey(
+  "BPFLoaderUpgradeab1e11111111111111111111111"
+);
+
 export class FloorSdk {
   readonly provider: AnchorProvider;
   readonly program: Program<FloorProgram>;
@@ -86,11 +90,11 @@ export class FloorSdk {
     );
   }
 
-  /** @deprecated Use investorPoolPda() + fetchInvestorPool() instead */
-  lobbyEntryPda(investor: PublicKey): [PublicKey, number] {
+  /** Program data account (BPF Upgradeable Loader) holding the upgrade authority. */
+  programDataPda(): [PublicKey, number] {
     return PublicKey.findProgramAddressSync(
-      [Buffer.from("lobby_entry"), investor.toBuffer()],
-      this.programId
+      [this.programId.toBuffer()],
+      BPF_LOADER_UPGRADEABLE_PROGRAM_ID
     );
   }
 
@@ -173,6 +177,7 @@ export class FloorSdk {
     const [usdcVault] = this.usdcVaultPda();
     const [walnVault] = this.walnVaultPda();
     const [investorPool] = this.investorPoolPda();
+    const [programData] = this.programDataPda();
 
     return this.program.methods
       .initialize(args.floorPriceUsdc, args.roundSizeWaln, args.lockPeriodSeconds)
@@ -187,6 +192,8 @@ export class FloorSdk {
         systemProgram: SystemProgram.programId,
         usdcTokenProgram: args.usdcTokenProgram ?? TOKEN_PROGRAM_ID,
         walnTokenProgram: args.walnTokenProgram ?? TOKEN_PROGRAM_ID,
+        program: this.programId,
+        programData,
       } as any)
       .instruction();
   }
@@ -217,6 +224,31 @@ export class FloorSdk {
       .instruction();
   }
 
+  async updateAatVolumeIx(args: {
+    admin: PublicKey;
+    investor: PublicKey;
+    newVolume: BN;
+  }): Promise<TransactionInstruction> {
+    const [contractState] = this.contractStatePda();
+    const [investorPool] = this.investorPoolPda();
+    const [nftAuthority] = this.nftAuthorityPda();
+    const [mint] = this.aatNftMintPda(args.investor);
+
+    return this.program.methods
+      .updateAatVolume(args.newVolume)
+      .accounts({
+        admin: args.admin,
+        contractState,
+        investorPool,
+        investor: args.investor,
+        mint,
+        nftAuthority,
+        tokenProgram: TOKEN_2022_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      } as any)
+      .instruction();
+  }
+
   async depositUsdcIx(args: {
     investor: PublicKey;
     investorUsdcAccount: PublicKey;
@@ -228,6 +260,10 @@ export class FloorSdk {
     const [contractState] = this.contractStatePda();
     const [usdcVault] = this.usdcVaultPda();
     const [investorPool] = this.investorPoolPda();
+    const investorAatAccount = this.investorAatAccount(
+      args.investor,
+      args.aatNft
+    );
 
     return this.program.methods
       .depositUsdc(args.usdcAmount)
@@ -239,6 +275,8 @@ export class FloorSdk {
         investorUsdcAccount: args.investorUsdcAccount,
         usdcVault,
         aatNft: args.aatNft,
+        investorAatAccount,
+        aatTokenProgram: TOKEN_2022_PROGRAM_ID,
         usdcTokenProgram: args.usdcTokenProgram ?? TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       } as any)
@@ -285,7 +323,7 @@ export class FloorSdk {
     sellerUsdcAccount: PublicKey;
     walnMint: PublicKey;
     usdcMint: PublicKey;
-    walnAmount: BN;
+    maxWalnAmount: BN;
     walnTokenProgram?: PublicKey;
     usdcTokenProgram?: PublicKey;
     roundTriggerAccounts?: { pubkey: PublicKey; isWritable: boolean }[];
@@ -294,7 +332,7 @@ export class FloorSdk {
     const [walnVault] = this.walnVaultPda();
     const [usdcVault] = this.usdcVaultPda();
     const [investorPool] = this.investorPoolPda();
-    const { accounts: hookAccounts, bumps: hookBumps } = await buildHookAccountsWithBumps(
+    const { accounts: hookAccounts } = await buildHookAccountsWithBumps(
       this.program.provider.connection,
       args.seller,
       args.walnMint,
@@ -305,7 +343,7 @@ export class FloorSdk {
       isWritable: a.isWritable,
     }));
     return this.program.methods
-      .sellWaln(args.walnAmount, hookBumps)
+      .sellWaln(args.maxWalnAmount)
       .accounts({
         seller: args.seller,
         contractState,
@@ -335,14 +373,14 @@ export class FloorSdk {
     const [walnVault] = this.walnVaultPda();
     const [roundLockedWaln] = this.roundLockedWalnPda(args.roundIndex);
     const [treasury] = this.treasuryPda();
-    const { accounts: hookAccounts, bumps: hookBumps } = await buildHookAccountsWithBumps(
+    const { accounts: hookAccounts} = await buildHookAccountsWithBumps(
       this.program.provider.connection,
       contractState,
       args.walnMint,
     );
 
     return this.program.methods
-      .claimWaln(args.roundIndex, hookBumps)
+      .claimWaln(args.roundIndex)
       .accounts({
         investor: args.investor,
         contractState,
@@ -357,6 +395,20 @@ export class FloorSdk {
       .instruction();
   }
 
+  /**
+   * Decode the RoundLockedWaln account and return the InvestorAlloc for a given investor.
+   * Account layout (Anchor #[account], Borsh):
+   *   [0..8]   discriminator
+   *   [8..16]  round_index: u64 LE
+   *   [16]     bump: u8
+   *   [17..25] unlock: i64 LE
+   *   [25..29] remaining_to_claim: u32 LE
+   *   [29..33] investors Vec length: u32 LE
+   *   [33...]  investors[]: InvestorAlloc (40 bytes each)
+   *              [0..32]  investor: Pubkey
+   *              [32..40] waln_amount: u64 LE
+   * `claimed` is derived: an allocation is claimed when waln_amount == 0.
+   */
   async fetchInvestorAlloc(roundIndex: BN, investor: PublicKey): Promise<{
     investor: PublicKey;
     walnAmount: bigint;
@@ -410,12 +462,42 @@ export class FloorSdk {
           contractState,
           investorPool,
         } as any).instruction(),
-      setPaused: (paused: boolean): Promise<TransactionInstruction> =>
-        this.program.methods.setPaused(paused).accounts(accounts as any).instruction(),
+      setSellPaused: (paused: boolean): Promise<TransactionInstruction> =>
+        this.program.methods.setSellPaused(paused).accounts(accounts as any).instruction(),
+      setFrozen: (frozen: boolean): Promise<TransactionInstruction> =>
+        this.program.methods.setFrozen(frozen).accounts(accounts as any).instruction(),
       fundTreasury: (amount: BN): Promise<TransactionInstruction> =>
         this.program.methods.fundTreasury(amount).accounts(accounts as any).instruction(),
+      withdrawTreasury: (amount: BN): Promise<TransactionInstruction> =>
+        this.program.methods.withdrawTreasury(amount).accounts(accounts as any).instruction(),
+      closeRoundRecord: (roundIndex: BN): Promise<TransactionInstruction> => {
+        const [roundRecord] = this.roundRecordPda(roundIndex);
+        const [treasury] = this.treasuryPda();
+        return this.program.methods
+          .closeRoundRecord(roundIndex)
+          .accounts({ admin: adminPubkey, contractState, roundRecord, treasury } as any)
+          .instruction();
+      },
       cancelRound: (): Promise<TransactionInstruction> =>
         this.program.methods.cancelRound().accounts({ admin: adminPubkey, contractState, investorPool } as any).instruction(),
+      removeInvestorFromPool: (args: {
+        investor: PublicKey;
+        usdcMint: PublicKey;
+        investorUsdcAccount: PublicKey;
+        usdcTokenProgram?: PublicKey;
+      }): Promise<TransactionInstruction> => {
+        const [usdcVault] = this.usdcVaultPda();
+        return this.program.methods.removeInvestorFromPool().accounts({
+          admin: adminPubkey,
+          contractState,
+          investorPool,
+          investor: args.investor,
+          usdcMint: args.usdcMint,
+          investorUsdcAccount: args.investorUsdcAccount,
+          usdcVault,
+          usdcTokenProgram: args.usdcTokenProgram ?? TOKEN_PROGRAM_ID,
+        } as any).instruction();
+      },
       transferAuthority: (newAdmin: PublicKey): Promise<TransactionInstruction> =>
         this.program.methods.transferAuthority().accounts({ admin: adminPubkey, newAdmin, contractState } as any).instruction(),
     };

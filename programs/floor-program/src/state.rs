@@ -1,6 +1,8 @@
 use anchor_lang::prelude::*;
 
 pub const MAX_INVESTORS: usize = 100;
+pub const MIN_SELL_WALN: u64 = 1_000_000_000;
+
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug)]
 pub struct InvestorAlloc {
@@ -46,23 +48,20 @@ pub struct ProgramState {
     pub usdc_withdraw_lock_seconds: i64,
     pub current_round_floor_price: u64,
     pub current_round_size_waln: u64,
+    pub current_round_lock_period: i64,
     pub total_aat_volume: u64,
     pub waln_dust_carryover: u64,
     pub total_usdc_locked_for_round: u64,
     pub pending_admin: Pubkey,
-    pub paused: u8,
+    pub sell_paused: u8,
     pub round_started: u8,
     pub bump: u8,
     pub usdc_vault_bump: u8,
     pub waln_vault_bump: u8,
     pub waln_decimals: u8,
     pub usdc_decimals: u8,
-    pub _padding: [u8; 1],
+    pub frozen: u8,
 }
-
-
-#[account]
-pub struct AatNftAuthority {}
 
 #[zero_copy]
 pub struct InvestorRecord {

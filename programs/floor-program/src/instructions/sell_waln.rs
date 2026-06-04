@@ -13,7 +13,7 @@ use crate::seeds::{
     CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, ROUND_LOCKED_WALN_SEED, ROUND_RECORD_SEED,
     TREASURY_SEED, USDC_VAULT_SEED, WALN_VAULT_SEED,
 };
-use crate::state::{InvestorAlloc, InvestorAllocated, InvestorPool, ProgramState, RoundClosed, RoundLockedWaln, RoundRecord};
+use crate::state::{InvestorAlloc, InvestorAllocated, InvestorPool, ProgramState, RoundClosed, RoundLockedWaln, RoundRecord, MIN_SELL_WALN};
 
 #[derive(Accounts)]
 pub struct SellWaln<'info> {
@@ -89,8 +89,7 @@ pub struct SellWaln<'info> {
 
 pub fn handler<'info>(
     ctx: Context<'_, '_, 'info, 'info, SellWaln<'info>>,
-    waln_amount: u64,
-    hook_bumps: [u8; 4],
+    max_waln_amount: u64,
 ) -> Result<()> {
     let waln_decimals = ctx.accounts.waln_mint.decimals;
     let usdc_decimals = ctx.accounts.usdc_mint.decimals;
@@ -104,11 +103,13 @@ pub fn handler<'info>(
     let need_round_start;
     let snapshot_price;
     let snapshot_size;
+    let waln_amount;
 
     {
         let state = ctx.accounts.contract_state.load()?;
-        require!(state.paused == 0, FloorError::ContractPaused);
-        require!(waln_amount > 0, FloorError::ZeroAmount);
+        require!(state.frozen == 0, FloorError::ContractFrozen);
+        require!(state.sell_paused == 0, FloorError::SellPaused);
+        require!(max_waln_amount > 0, FloorError::ZeroAmount);
         require!(ctx.accounts.waln_mint.key() == state.waln_mint, FloorError::InvalidMint);
         require!(ctx.accounts.usdc_mint.key() == state.usdc_mint, FloorError::InvalidMint);
 
@@ -129,7 +130,29 @@ pub fn handler<'info>(
         let remaining_in_round = eff_round_size
             .checked_sub(eff_round_waln)
             .ok_or(FloorError::ArithmeticOverflow)?;
-        require!(waln_amount <= remaining_in_round, FloorError::SellAmountExceedsRound);
+        waln_amount = max_waln_amount.min(remaining_in_round);
+        require!(waln_amount > 0, FloorError::ZeroAmount);
+
+        let post_sale_remaining = remaining_in_round
+            .checked_sub(waln_amount)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+        if post_sale_remaining > 0 {
+            let local_waln_scale = 10_u128.pow(waln_decimals as u32);
+            let post_sale_usdc = (post_sale_remaining as u128)
+                .checked_mul(eff_floor_price as u128)
+                .ok_or(FloorError::ArithmeticOverflow)?
+                .checked_div(local_waln_scale)
+                .ok_or(FloorError::ArithmeticOverflow)?;
+            require!(post_sale_usdc > 0, FloorError::SellLeavesUnpayableDust);
+        }
+
+        if eff_round_waln == 0 {
+            let is_completing = waln_amount == remaining_in_round;
+            require!(
+                waln_amount >= MIN_SELL_WALN || is_completing,
+                FloorError::SellAmountTooSmall
+            );
+        }
 
         floor_price_usdc = eff_floor_price;
         current_round_size_waln = eff_round_size;
@@ -178,7 +201,6 @@ pub fn handler<'info>(
             &ctx.accounts.waln_mint.key(),
             &ctx.accounts.seller.key(),
             &hook_program_id,
-            hook_bumps,
         )?;
         hook_offset = 8;
     } else {
@@ -240,6 +262,7 @@ pub fn handler<'info>(
     if need_round_start {
         state.current_round_floor_price = snapshot_price;
         state.current_round_size_waln = snapshot_size;
+        state.current_round_lock_period = state.lock_period_seconds;
         state.total_usdc_locked_for_round = usdc_locked_new;
         state.round_started = 1;
     }
@@ -256,7 +279,7 @@ pub fn handler<'info>(
         );
 
         let clock = Clock::get()?;
-        let lock_period = state.lock_period_seconds;
+        let lock_period = state.current_round_lock_period;
         let dust_pool = state.waln_dust_carryover;
         let waln_in_round = state.current_round_waln;
 
@@ -340,6 +363,12 @@ pub fn handler<'info>(
         }
 
         if dust_pool > 0 && participant_count_for_dust > 0 {
+            // Pseudo-random dust recipient (unix_timestamp % N): accepted as designed.
+            // dust_pool is the per-round pro-rata rounding remainder
+            // (round_size − sum(allocations)) - bounded to a fraction of a wALN
+            // because a round can't start without eligible investors and locks sum
+            // to the full round cap. A validator can nudge the winner via timestamp,
+            // but the prize is negligible.
             let dust_recipient_idx = (clock.unix_timestamp as u64)
                 .wrapping_rem(participant_count_for_dust) as usize;
 
@@ -514,7 +543,7 @@ pub fn handler<'info>(
 
         {
             let mut rr_data = round_record_info.try_borrow_mut_data()?;
-            rr_data[..8].copy_from_slice(&RoundRecord::DISCRIMINATOR);
+            rr_data[..8].copy_from_slice(RoundRecord::DISCRIMINATOR);
             let record = RoundRecord {
                 round_index,
                 triggered_at: clock.unix_timestamp,
@@ -559,11 +588,16 @@ pub fn handler<'info>(
                 Ok((_aat_vol, usdc_locked)) => {
                     state.current_round_floor_price = floor_price_usdc_val;
                     state.current_round_size_waln = round_size_waln_val;
+                    state.current_round_lock_period = state.lock_period_seconds;
                     state.total_usdc_locked_for_round = usdc_locked;
                     state.round_started = 1;
                 }
                 Err(ref e) if e == &FloorError::NoEligibleInvestors.into() => {
                     msg!("Auto-start skipped: no eligible investors");
+                    state.total_usdc_locked_for_round = 0;
+                }
+                Err(ref e) if e == &FloorError::InvalidParameter.into() => {
+                    msg!("Auto-start skipped: round cap would be zero (round_size * floor_price < 10^decimals)");
                     state.total_usdc_locked_for_round = 0;
                 }
                 Err(e) => {

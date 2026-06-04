@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_spl::token_2022::Token2022;
 use anchor_spl::token_interface::{
     transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
@@ -49,7 +50,14 @@ pub struct DepositUsdc<'info> {
 
     /// CHECK: Verified in handler via verify_aat_nft_and_get_allocation
     pub aat_nft: UncheckedAccount<'info>,
+    #[account(
+        associated_token::mint = aat_nft,
+        associated_token::authority = investor,
+        associated_token::token_program = aat_token_program,
+    )]
+    pub investor_aat_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
+    pub aat_token_program: Program<'info, Token2022>,
     pub usdc_token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
@@ -59,6 +67,7 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
     let usdc_mint_key;
     {
         let state = ctx.accounts.contract_state.load()?;
+        require!(state.frozen == 0, FloorError::ContractFrozen);
         require!(usdc_amount > 0, FloorError::ZeroAmount);
         usdc_mint_key = state.usdc_mint;
         usdc_decimals = ctx.accounts.usdc_mint.decimals;
@@ -69,6 +78,12 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
         &ctx.accounts.aat_nft.to_account_info(),
         &ctx.accounts.investor.key(),
     )?;
+    require!(aat_vol > 0, FloorError::ZeroAatAllocation);
+
+    require!(
+        ctx.accounts.investor_aat_account.amount == 1,
+        FloorError::NoAatNft
+    );
 
     let usdc_withdraw_lock_seconds;
     {
@@ -130,9 +145,10 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
 
     if usdc_withdraw_lock_seconds > 0 {
         let now = Clock::get()?.unix_timestamp;
-        record.usdc_unlock_ts = now
+        let new_unlock_ts = now
             .checked_add(usdc_withdraw_lock_seconds)
             .ok_or(FloorError::ArithmeticOverflow)?;
+        record.usdc_unlock_ts = record.usdc_unlock_ts.max(new_unlock_ts);
     }
 
     let mut state = ctx.accounts.contract_state.load_mut()?;
