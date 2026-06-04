@@ -54,4 +54,8 @@ pub enum FloorError {
     InvestorNotInactive,
     #[msg("AAT NFT has zero allocation — deposits require a positive aat_volume")]
     ZeroAatAllocation,
+    #[msg("Cannot withdraw while funds are locked in an active round")]
+    FundsLocked,
+    #[msg("Investor does not hold a valid AAT NFT from the configured collection")]
+    NoAatNft,
 }

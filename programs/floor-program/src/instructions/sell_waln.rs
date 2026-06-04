@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{program::{invoke, invoke_signed}, system_instruction};
+use anchor_lang::solana_program::{log::sol_log_data, program::{invoke, invoke_signed}, system_instruction};
+use anchor_lang::Discriminator;
 use anchor_spl::token_interface::{
     transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
@@ -12,7 +13,7 @@ use crate::seeds::{
     CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, ROUND_LOCKED_WALN_SEED, ROUND_RECORD_SEED,
     TREASURY_SEED, USDC_VAULT_SEED, WALN_VAULT_SEED,
 };
-use crate::state::{InvestorAlloc, InvestorPool, ProgramState, RoundLockedWaln, RoundRecord, MIN_SELL_WALN};
+use crate::state::{InvestorAlloc, InvestorAllocated, InvestorPool, ProgramState, RoundClosed, RoundLockedWaln, RoundRecord, MIN_SELL_WALN};
 
 #[derive(Accounts)]
 pub struct SellWaln<'info> {
@@ -393,71 +394,109 @@ pub fn handler<'info>(
             }
         }
 
+        let participant_count = participant_data.len() as u32;
+        participant_data.retain(|(_, waln_amount)| *waln_amount > 0);
         participant_data.sort_unstable_by(|a, b| a.0.to_bytes().cmp(&b.0.to_bytes()));
 
-        let participant_count = participant_data.len() as u32;
-        let round_locked_waln_space = 8 + std::mem::size_of::<RoundLockedWaln>();
-        let round_locked_waln_rent = Rent::get()?.minimum_balance(round_locked_waln_space);
+        if !participant_data.is_empty() {
+            let claimable_participant_count = participant_data.len() as u32;
+            let round_locked_waln_space = RoundLockedWaln::space(participant_data.len());
+            let round_locked_waln_rent = Rent::get()?.minimum_balance(round_locked_waln_space);
 
-        let existing_locked_waln_lamports = round_locked_waln_info.lamports();
-        if existing_locked_waln_lamports == 0 {
-            invoke_signed(
-                &system_instruction::create_account(
-                    treasury_info.key,
-                    round_locked_waln_info.key,
-                    round_locked_waln_rent,
-                    round_locked_waln_space as u64,
-                    &crate::ID,
-                ),
-                &[treasury_info.clone(), round_locked_waln_info.clone(), system_program_info.clone()],
-                &[
-                    &[TREASURY_SEED, &[treasury_bump]],
-                    &[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]],
-                ],
-            )?;
-        } else {
-            if existing_locked_waln_lamports < round_locked_waln_rent {
+            let existing_locked_waln_lamports = round_locked_waln_info.lamports();
+            if existing_locked_waln_lamports == 0 {
                 invoke_signed(
-                    &system_instruction::transfer(
+                    &system_instruction::create_account(
                         treasury_info.key,
                         round_locked_waln_info.key,
-                        round_locked_waln_rent - existing_locked_waln_lamports,
+                        round_locked_waln_rent,
+                        round_locked_waln_space as u64,
+                        &crate::ID,
                     ),
                     &[treasury_info.clone(), round_locked_waln_info.clone(), system_program_info.clone()],
-                    &[&[TREASURY_SEED, &[treasury_bump]]],
+                    &[
+                        &[TREASURY_SEED, &[treasury_bump]],
+                        &[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]],
+                    ],
+                )?;
+            } else {
+                if existing_locked_waln_lamports < round_locked_waln_rent {
+                    invoke_signed(
+                        &system_instruction::transfer(
+                            treasury_info.key,
+                            round_locked_waln_info.key,
+                            round_locked_waln_rent - existing_locked_waln_lamports,
+                        ),
+                        &[treasury_info.clone(), round_locked_waln_info.clone(), system_program_info.clone()],
+                        &[&[TREASURY_SEED, &[treasury_bump]]],
+                    )?;
+                }
+                invoke_signed(
+                    &system_instruction::allocate(round_locked_waln_info.key, round_locked_waln_space as u64),
+                    &[round_locked_waln_info.clone(), system_program_info.clone()],
+                    &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
+                )?;
+                invoke_signed(
+                    &system_instruction::assign(round_locked_waln_info.key, &crate::ID),
+                    &[round_locked_waln_info.clone(), system_program_info.clone()],
+                    &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
                 )?;
             }
-            invoke_signed(
-                &system_instruction::allocate(round_locked_waln_info.key, round_locked_waln_space as u64),
-                &[round_locked_waln_info.clone(), system_program_info.clone()],
-                &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
-            )?;
-            invoke_signed(
-                &system_instruction::assign(round_locked_waln_info.key, &crate::ID),
-                &[round_locked_waln_info.clone(), system_program_info.clone()],
-                &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
-            )?;
-        }
 
-        {
-            let mut data = round_locked_waln_info.try_borrow_mut_data()?;
-            data[..8].copy_from_slice(RoundLockedWaln::DISCRIMINATOR);
-            let rw: &mut RoundLockedWaln =
-                bytemuck::from_bytes_mut(&mut data[8..]);
-            rw.round_index = round_index;
-            rw.unlock = unlock_timestamp;
-            rw.count = participant_count;
-            rw.bump = round_locked_waln_bump;
-            rw._pad = [0; 3];
-            for (i, (investor, waln_alloc)) in participant_data.iter().enumerate() {
-                rw.investors[i] = InvestorAlloc {
-                    investor: *investor,
-                    waln_amount: *waln_alloc,
-                    claimed: 0,
-                    _pad: [0; 7],
+            {
+                let entries: Vec<InvestorAlloc> = participant_data
+                    .iter()
+                    .map(|(investor, waln_amount)| InvestorAlloc {
+                        investor: *investor,
+                        waln_amount: *waln_amount,
+                    })
+                    .collect();
+                let rlw = RoundLockedWaln {
+                    round_index,
+                    bump: round_locked_waln_bump,
+                    unlock: unlock_timestamp,
+                    remaining_to_claim: claimable_participant_count,
+                    investors: entries,
                 };
+                let mut data = round_locked_waln_info.try_borrow_mut_data()?;
+                let mut writer: &mut [u8] = &mut data;
+                rlw.try_serialize(&mut writer)?;
             }
         }
+
+        const ALLOC_LOG_LEN: usize = 8 + 8 + 32 + 8 + 8 + 8;
+        let alloc_disc = InvestorAllocated::DISCRIMINATOR;
+        let round_index_le = round_index.to_le_bytes();
+        let unlock_le = unlock_timestamp.to_le_bytes();
+
+        for (investor, waln_amount) in participant_data.iter() {
+            let usdc_spent_for = u64::try_from(
+                (*waln_amount as u128)
+                    .checked_mul(floor_price_usdc as u128)
+                    .ok_or(FloorError::ArithmeticOverflow)?
+                    .checked_div(waln_scale)
+                    .ok_or(FloorError::ArithmeticOverflow)?,
+            )
+            .map_err(|_| FloorError::ArithmeticOverflow)?;
+
+            let mut buf = [0u8; ALLOC_LOG_LEN];
+            buf[0..8].copy_from_slice(alloc_disc);
+            buf[8..16].copy_from_slice(&round_index_le);
+            buf[16..48].copy_from_slice(investor.as_ref());
+            buf[48..56].copy_from_slice(&waln_amount.to_le_bytes());
+            buf[56..64].copy_from_slice(&usdc_spent_for.to_le_bytes());
+            buf[64..72].copy_from_slice(&unlock_le);
+
+            sol_log_data(&[&buf]);
+        }
+
+        emit!(RoundClosed {
+            round_index,
+            waln_purchased: total_waln_purchased,
+            usdc_spent: total_usdc_spent,
+            participant_count,
+            unlock: unlock_timestamp,
+        });
 
         let round_record_space = 8 + RoundRecord::INIT_SPACE;
         let round_record_rent = Rent::get()?.minimum_balance(round_record_space);
