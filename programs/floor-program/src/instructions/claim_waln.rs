@@ -83,6 +83,7 @@ pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _rou
     let should_close;
     {
         let rlw = &mut ctx.accounts.round_locked_waln;
+        require!(rlw.finalized, FloorError::NotYetUnlocked);
         let unlock_ts = rlw.unlock;
         let clock = Clock::get()?;
         require!(
