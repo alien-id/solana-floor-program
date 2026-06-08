@@ -1,12 +1,15 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{program::invoke_signed, system_instruction};
+use anchor_lang::solana_program::{log::sol_log_data, program::invoke_signed, system_instruction};
 
 use crate::errors::FloorError;
 use crate::seeds::{
     CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, ROUND_LOCKED_WALN_SEED, ROUND_RECORD_SEED,
     TREASURY_SEED,
 };
-use crate::state::{InvestorAlloc, InvestorPool, ProgramState, RoundLockedWaln, RoundRecord, MAX_INVESTORS};
+use crate::state::{
+    InvestorAlloc, InvestorAllocated, InvestorPool, ProgramState, RoundClosed, RoundLockedWaln,
+    RoundRecord,
+};
 
 #[derive(Accounts)]
 pub struct CloseRound<'info> {
@@ -25,7 +28,7 @@ pub struct CloseRound<'info> {
         seeds = [INVESTOR_POOL_SEED],
         bump,
     )]
-    pub investor_pool: AccountLoader<'info, InvestorPool>,
+    pub investor_pool: Account<'info, InvestorPool>,
 
     /// CHECK: Treasury PDA — system-owned, funds round account creation
     #[account(
@@ -91,10 +94,8 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
     let round_record_info = &ctx.remaining_accounts[0];
     let round_locked_waln_info = &ctx.remaining_accounts[1];
 
-    let (round_record_pda, round_record_bump) = Pubkey::find_program_address(
-        &[ROUND_RECORD_SEED, &round_index.to_le_bytes()],
-        &crate::ID,
-    );
+    let (round_record_pda, round_record_bump) =
+        Pubkey::find_program_address(&[ROUND_RECORD_SEED, &round_index.to_le_bytes()], &crate::ID);
     require!(
         round_record_pda == round_record_info.key(),
         FloorError::InvalidRemainingAccounts
@@ -120,9 +121,8 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
     let mut total_locked_usdc: u128 = 0;
     let mut eligible_count: usize = 0;
     {
-        let pool = ctx.accounts.investor_pool.load()?;
-        let count = pool.count as usize;
-        for record in pool.investors[..count].iter() {
+        let pool = &ctx.accounts.investor_pool;
+        for record in pool.investors.iter() {
             if record.usdc_locked_current_round == 0 {
                 continue;
             }
@@ -151,9 +151,8 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
 
     let mut total_base_usdc_spent: u64 = 0;
     {
-        let pool = ctx.accounts.investor_pool.load()?;
-        let count = pool.count as usize;
-        for record in pool.investors[..count].iter() {
+        let pool = &ctx.accounts.investor_pool;
+        for record in pool.investors.iter() {
             if record.usdc_locked_current_round == 0 {
                 continue;
             }
@@ -181,13 +180,13 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
     let mut total_usdc_spent: u64 = 0;
     let mut total_waln_purchased: u64 = 0;
     let mut total_aat_volume_at_trigger: u64 = 0;
-    let mut participant_data: Vec<(Pubkey, u64)> = Vec::with_capacity(MAX_INVESTORS);
+    let mut participant_data: Vec<(Pubkey, u64, u64)> =
+        Vec::with_capacity(ctx.accounts.investor_pool.investors.len());
 
     // Second pass: pro-rata wALN allocation + refund of unused locked USDC.
     {
-        let mut pool = ctx.accounts.investor_pool.load_mut()?;
-        let count = pool.count as usize;
-        for record in pool.investors[..count].iter_mut() {
+        let pool = &mut ctx.accounts.investor_pool;
+        for record in pool.investors.iter_mut() {
             if record.usdc_locked_current_round == 0 {
                 continue;
             }
@@ -256,13 +255,19 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
                 .ok_or(FloorError::ArithmeticOverflow)?;
 
             if waln_alloc > 0 {
-                participant_data.push((record.investor, waln_alloc));
+                participant_data.push((record.investor, waln_alloc, usdc_spent));
             }
         }
     }
 
-    require!(remaining_usdc_remainder == 0, FloorError::ArithmeticOverflow);
-    require!(total_usdc_spent == usdc_paid_for_round, FloorError::ArithmeticOverflow);
+    require!(
+        remaining_usdc_remainder == 0,
+        FloorError::ArithmeticOverflow
+    );
+    require!(
+        total_usdc_spent == usdc_paid_for_round,
+        FloorError::ArithmeticOverflow
+    );
 
     participant_data.sort_unstable_by(|a, b| a.0.to_bytes().cmp(&b.0.to_bytes()));
     let participant_count = participant_data.len() as u32;
@@ -286,10 +291,18 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
                     round_locked_waln_space as u64,
                     &crate::ID,
                 ),
-                &[treasury_info.clone(), round_locked_waln_info.clone(), system_program_info.clone()],
+                &[
+                    treasury_info.clone(),
+                    round_locked_waln_info.clone(),
+                    system_program_info.clone(),
+                ],
                 &[
                     &[TREASURY_SEED, &[treasury_bump]],
-                    &[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]],
+                    &[
+                        ROUND_LOCKED_WALN_SEED,
+                        &round_index.to_le_bytes(),
+                        &[round_locked_waln_bump],
+                    ],
                 ],
             )?;
         } else {
@@ -300,25 +313,40 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
                         round_locked_waln_info.key,
                         round_locked_waln_rent - existing_locked_waln_lamports,
                     ),
-                    &[treasury_info.clone(), round_locked_waln_info.clone(), system_program_info.clone()],
+                    &[
+                        treasury_info.clone(),
+                        round_locked_waln_info.clone(),
+                        system_program_info.clone(),
+                    ],
                     &[&[TREASURY_SEED, &[treasury_bump]]],
                 )?;
             }
             invoke_signed(
-                &system_instruction::allocate(round_locked_waln_info.key, round_locked_waln_space as u64),
+                &system_instruction::allocate(
+                    round_locked_waln_info.key,
+                    round_locked_waln_space as u64,
+                ),
                 &[round_locked_waln_info.clone(), system_program_info.clone()],
-                &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
+                &[&[
+                    ROUND_LOCKED_WALN_SEED,
+                    &round_index.to_le_bytes(),
+                    &[round_locked_waln_bump],
+                ]],
             )?;
             invoke_signed(
                 &system_instruction::assign(round_locked_waln_info.key, &crate::ID),
                 &[round_locked_waln_info.clone(), system_program_info.clone()],
-                &[&[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes(), &[round_locked_waln_bump]]],
+                &[&[
+                    ROUND_LOCKED_WALN_SEED,
+                    &round_index.to_le_bytes(),
+                    &[round_locked_waln_bump],
+                ]],
             )?;
         }
 
         let entries: Vec<InvestorAlloc> = participant_data
             .iter()
-            .map(|(investor, waln_amount)| InvestorAlloc {
+            .map(|(investor, waln_amount, _)| InvestorAlloc {
                 investor: *investor,
                 waln_amount: *waln_amount,
             })
@@ -349,10 +377,18 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
                 round_record_space as u64,
                 &crate::ID,
             ),
-            &[treasury_info.clone(), round_record_info.clone(), system_program_info.clone()],
+            &[
+                treasury_info.clone(),
+                round_record_info.clone(),
+                system_program_info.clone(),
+            ],
             &[
                 &[TREASURY_SEED, &[treasury_bump]],
-                &[ROUND_RECORD_SEED, &round_index.to_le_bytes(), &[round_record_bump]],
+                &[
+                    ROUND_RECORD_SEED,
+                    &round_index.to_le_bytes(),
+                    &[round_record_bump],
+                ],
             ],
         )?;
     } else {
@@ -363,19 +399,31 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
                     round_record_info.key,
                     round_record_rent - existing_round_record_lamports,
                 ),
-                &[treasury_info.clone(), round_record_info.clone(), system_program_info.clone()],
+                &[
+                    treasury_info.clone(),
+                    round_record_info.clone(),
+                    system_program_info.clone(),
+                ],
                 &[&[TREASURY_SEED, &[treasury_bump]]],
             )?;
         }
         invoke_signed(
             &system_instruction::allocate(round_record_info.key, round_record_space as u64),
             &[round_record_info.clone(), system_program_info.clone()],
-            &[&[ROUND_RECORD_SEED, &round_index.to_le_bytes(), &[round_record_bump]]],
+            &[&[
+                ROUND_RECORD_SEED,
+                &round_index.to_le_bytes(),
+                &[round_record_bump],
+            ]],
         )?;
         invoke_signed(
             &system_instruction::assign(round_record_info.key, &crate::ID),
             &[round_record_info.clone(), system_program_info.clone()],
-            &[&[ROUND_RECORD_SEED, &round_index.to_le_bytes(), &[round_record_bump]]],
+            &[&[
+                ROUND_RECORD_SEED,
+                &round_index.to_le_bytes(),
+                &[round_record_bump],
+            ]],
         )?;
     }
 
@@ -394,6 +442,31 @@ pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>)
         use anchor_lang::AnchorSerialize;
         record.serialize(&mut &mut rr_data[8..])?;
     }
+
+    const ALLOC_LOG_LEN: usize = 8 + 8 + 32 + 8 + 8 + 8;
+    let alloc_disc = InvestorAllocated::DISCRIMINATOR;
+    let round_index_le = round_index.to_le_bytes();
+    let unlock_le = unlock_timestamp.to_le_bytes();
+
+    for (investor, waln_amount, usdc_spent_for) in participant_data.iter() {
+        let mut buf = [0u8; ALLOC_LOG_LEN];
+        buf[0..8].copy_from_slice(alloc_disc);
+        buf[8..16].copy_from_slice(&round_index_le);
+        buf[16..48].copy_from_slice(investor.as_ref());
+        buf[48..56].copy_from_slice(&waln_amount.to_le_bytes());
+        buf[56..64].copy_from_slice(&usdc_spent_for.to_le_bytes());
+        buf[64..72].copy_from_slice(&unlock_le);
+
+        sol_log_data(&[&buf]);
+    }
+
+    emit!(RoundClosed {
+        round_index,
+        waln_purchased: total_waln_purchased,
+        usdc_spent: total_usdc_spent,
+        participant_count,
+        unlock: unlock_timestamp,
+    });
 
     // --- Finalize state: no auto-start; next round starts on next sell. ---
     let new_dust = waln_in_round

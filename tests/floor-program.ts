@@ -2,6 +2,7 @@ import * as anchor from "@coral-xyz/anchor";
 import {AnchorProvider, BN} from "@coral-xyz/anchor";
 import {
     ComputeBudgetProgram,
+    LAMPORTS_PER_SOL,
     Keypair,
     PublicKey,
     SystemProgram,
@@ -141,6 +142,32 @@ describe("floor-program", () => {
     // ---------------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------------
+
+    async function getAccountLamports(pubkey: PublicKey): Promise<number> {
+        return (await provider.connection.getAccountInfo(pubkey))?.lamports ?? 0;
+    }
+
+    function formatSol(lamports: number): string {
+        return (lamports / LAMPORTS_PER_SOL).toFixed(9);
+    }
+
+    async function logRoundFinalizeRent(
+        label: string,
+        roundRecord: PublicKey,
+        roundLockedWaln: PublicKey,
+        beforeRoundRecordLamports: number,
+        beforeRoundLockedWalnLamports: number
+    ): Promise<void> {
+        const afterRoundRecordLamports = await getAccountLamports(roundRecord);
+        const afterRoundLockedWalnLamports = await getAccountLamports(roundLockedWaln);
+        const roundRecordRent = Math.max(afterRoundRecordLamports - beforeRoundRecordLamports, 0);
+        const roundLockedWalnRent = Math.max(afterRoundLockedWalnLamports - beforeRoundLockedWalnLamports, 0);
+        const totalRent = roundRecordRent + roundLockedWalnRent;
+
+        console.log(`    [RENT] ${label}: ${totalRent} lamports (${formatSol(totalRent)} SOL)`);
+        console.log(`    [RENT]   RoundRecord: ${roundRecordRent} lamports (${formatSol(roundRecordRent)} SOL), refundable: yes via closeRoundRecord`);
+        console.log(`    [RENT]   RoundLockedWaln: ${roundLockedWalnRent} lamports (${formatSol(roundLockedWalnRent)} SOL), refundable: yes to treasury after final claim`);
+    }
 
     async function getOracleSignature(
         session: { address: string; privateKey: string },
@@ -1975,6 +2002,8 @@ describe("floor-program", () => {
             const [roundLockedWaln0] = sdk.roundLockedWalnPda(round0);
 
             const sellerUsdcBefore = await getTokenBalance(provider, sellerUsdcAcc);
+            const beforeRoundRecordLamports = await getAccountLamports(roundRecord0);
+            const beforeRoundLockedWalnLamports = await getAccountLamports(roundLockedWaln0);
 
             const triggerSig = await provider.sendAndConfirm(
                 new Transaction().add(
@@ -2001,8 +2030,13 @@ describe("floor-program", () => {
                 maxSupportedTransactionVersion: 0
             });
             console.log(`    [CU] sell_waln TRIGGER (round-end + round-start, 2 investors): ${triggerTx?.meta?.computeUnitsConsumed}`);
-            const roundLockedWaln0Lamports = await provider.connection.getBalance(roundLockedWaln0);
-            console.log(`    [LAMPORTS] RoundLockedWaln account: ${roundLockedWaln0Lamports} lamports`);
+            await logRoundFinalizeRent(
+                "sell_waln round finalization",
+                roundRecord0,
+                roundLockedWaln0,
+                beforeRoundRecordLamports,
+                beforeRoundLockedWalnLamports
+            );
 
             const sellerUsdcAfter = await getTokenBalance(provider, sellerUsdcAcc);
             assert.equal(
@@ -3124,6 +3158,10 @@ describe("floor-program", () => {
             assert.equal(stateBefore.roundStarted, 1, "round must be active before close");
 
             closedRoundIdx = new BN(stateBefore.roundCount.toString());
+            const [roundRecord] = sdk.roundRecordPda(closedRoundIdx);
+            const [roundLockedWaln] = sdk.roundLockedWalnPda(closedRoundIdx);
+            const beforeRoundRecordLamports = await getAccountLamports(roundRecord);
+            const beforeRoundLockedWalnLamports = await getAccountLamports(roundLockedWaln);
             const floorPrice = BigInt(stateBefore.currentRoundFloorPrice.toString());
             const walnScale = BigInt(WALN_UNIT);
             const walnInRoundBefore = BigInt(stateBefore.currentRoundWaln.toString());
@@ -3144,6 +3182,13 @@ describe("floor-program", () => {
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.admin(admin.publicKey).closeRound()
                 )
+            );
+            await logRoundFinalizeRent(
+                "close_round forced finalization",
+                roundRecord,
+                roundLockedWaln,
+                beforeRoundRecordLamports,
+                beforeRoundLockedWalnLamports
             );
 
             // --- State finalized, NO new round started. ---
@@ -3247,7 +3292,7 @@ describe("floor-program", () => {
     // ---------------------------------------------------------------------------
     // 100-investor scale test
     // ---------------------------------------------------------------------------
-    describe.skip("100-investor pool scale test", () => {
+    describe("100-investor pool scale test", () => {
         const NUM_NEW = 98;
 
         interface NewInvestor {
@@ -3374,7 +3419,7 @@ describe("floor-program", () => {
             );
         });
 
-        it("triggers round end with all 100 investors (99 new + 1 original)", async () => {
+        it("triggers round end with all 100 investors (98 new + 2 original)", async () => {
             const stateBefore = await sdk.program.account.programState.fetch(contractState);
             assert.equal(stateBefore.roundStarted, 1, "round should be auto-started");
 
@@ -3386,7 +3431,7 @@ describe("floor-program", () => {
 
             const sig = await provider.sendAndConfirm(
                 new Transaction().add(
-                    ComputeBudgetProgram.setComputeUnitLimit({units: 300_000}),
+                    ComputeBudgetProgram.setComputeUnitLimit({units: 500_000}),
                     await sdk.sellWalnIx({
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
@@ -3417,12 +3462,12 @@ describe("floor-program", () => {
             const investorPoolLamports100 = await provider.connection.getBalance(sdk.investorPoolPda()[0]);
             console.log(`    [LAMPORTS] InvestorPool account (100-investor): ${investorPoolLamports100} lamports`);
 
-            // Verify round record was created with 102 participants
+            // Verify round record was created with 100 participants
             const rr = await sdk.fetchRoundRecord(roundIdx);
             assert.equal(
                 rr.participantCount,
-                99,
-                "all 100 investors (1 original + 99 new) should participate"
+                100,
+                "all 100 investors (2 original + 98 new) should participate"
             );
 
             // Verify round count incremented

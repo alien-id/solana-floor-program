@@ -1,13 +1,14 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::{program::invoke, system_instruction};
 use anchor_spl::token_2022::Token2022;
 use anchor_spl::token_interface::{
     transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
 
 use crate::errors::FloorError;
-use crate::utils::verify_aat_nft_and_get_allocation;
 use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, USDC_VAULT_SEED};
-use crate::state::{InvestorPool, InvestorRecord, ProgramState, MAX_INVESTORS};
+use crate::state::{InvestorPool, InvestorRecord, ProgramState};
+use crate::utils::verify_aat_nft_and_get_allocation;
 
 #[derive(Accounts)]
 pub struct DepositUsdc<'info> {
@@ -26,7 +27,7 @@ pub struct DepositUsdc<'info> {
         seeds = [INVESTOR_POOL_SEED],
         bump,
     )]
-    pub investor_pool: AccountLoader<'info, InvestorPool>,
+    pub investor_pool: Account<'info, InvestorPool>,
 
     pub usdc_mint: Box<InterfaceAccount<'info, Mint>>,
 
@@ -72,7 +73,10 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
         usdc_mint_key = state.usdc_mint;
         usdc_decimals = ctx.accounts.usdc_mint.decimals;
     }
-    require!(ctx.accounts.usdc_mint.key() == usdc_mint_key, FloorError::InvalidMint);
+    require!(
+        ctx.accounts.usdc_mint.key() == usdc_mint_key,
+        FloorError::InvalidMint
+    );
 
     let aat_vol = verify_aat_nft_and_get_allocation(
         &ctx.accounts.aat_nft.to_account_info(),
@@ -92,16 +96,12 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
     }
 
     let investor_key = ctx.accounts.investor.key();
-
-    {
-        let pool = ctx.accounts.investor_pool.load()?;
-        let count = pool.count as usize;
-        require!(
-            count < MAX_INVESTORS
-                || pool.investors[..count].iter().any(|r| r.investor == investor_key),
-            FloorError::InvestorPoolFull
-        );
-    }
+    let is_new_investor = !ctx
+        .accounts
+        .investor_pool
+        .investors
+        .iter()
+        .any(|r| r.investor == investor_key);
 
     transfer_checked(
         CpiContext::new(
@@ -117,13 +117,45 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
         usdc_decimals,
     )?;
 
-    let mut pool = ctx.accounts.investor_pool.load_mut()?;
-    let count = pool.count as usize;
-    let record = match pool.investors[..count].iter_mut().find(|r| r.investor == investor_key) {
+    if is_new_investor {
+        let new_space = InvestorPool::space(
+            ctx.accounts
+                .investor_pool
+                .investors
+                .len()
+                .checked_add(1)
+                .ok_or(FloorError::ArithmeticOverflow)?,
+        );
+        let new_rent = Rent::get()?.minimum_balance(new_space);
+        let pool_info = ctx.accounts.investor_pool.to_account_info();
+        let current_lamports = pool_info.lamports();
+        if current_lamports < new_rent {
+            invoke(
+                &system_instruction::transfer(
+                    &ctx.accounts.investor.key(),
+                    pool_info.key,
+                    new_rent - current_lamports,
+                ),
+                &[
+                    ctx.accounts.investor.to_account_info(),
+                    pool_info.clone(),
+                    ctx.accounts.system_program.to_account_info(),
+                ],
+            )?;
+        }
+        pool_info.resize(new_space)?;
+    }
+
+    let record = match ctx
+        .accounts
+        .investor_pool
+        .investors
+        .iter_mut()
+        .find(|r| r.investor == investor_key)
+    {
         Some(r) => r,
         None => {
-            let idx = count;
-            pool.investors[idx] = InvestorRecord {
+            ctx.accounts.investor_pool.investors.push(InvestorRecord {
                 investor: investor_key,
                 usdc_deposited: 0,
                 usdc_locked_current_round: 0,
@@ -131,9 +163,12 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
                 waln_purchased_total: 0,
                 aat_volume: 0,
                 usdc_unlock_ts: 0,
-            };
-            pool.count += 1;
-            &mut pool.investors[idx]
+            });
+            ctx.accounts
+                .investor_pool
+                .investors
+                .last_mut()
+                .ok_or(FloorError::InvalidInvestor)?
         }
     };
 

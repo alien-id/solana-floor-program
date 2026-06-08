@@ -26,7 +26,7 @@ pub struct UpdateAatVolume<'info> {
         seeds = [INVESTOR_POOL_SEED],
         bump,
     )]
-    pub investor_pool: AccountLoader<'info, InvestorPool>,
+    pub investor_pool: Account<'info, InvestorPool>,
 
     /// CHECK: investor wallet whose AAT NFT allocation is being updated
     pub investor: UncheckedAccount<'info>,
@@ -58,10 +58,8 @@ pub fn handler(ctx: Context<UpdateAatVolume>, new_volume: u64) -> Result<()> {
         require!(state.round_started == 0, FloorError::FundsLocked);
     }
 
-    let old_volume = verify_aat_nft_and_get_allocation(
-        &ctx.accounts.mint.to_account_info(),
-        &investor_key,
-    )?;
+    let old_volume =
+        verify_aat_nft_and_get_allocation(&ctx.accounts.mint.to_account_info(), &investor_key)?;
 
     {
         let mut state = ctx.accounts.contract_state.load_mut()?;
@@ -96,15 +94,14 @@ pub fn handler(ctx: Context<UpdateAatVolume>, new_volume: u64) -> Result<()> {
         nft_signer,
     )?;
 
+    if let Some(record) = ctx
+        .accounts
+        .investor_pool
+        .investors
+        .iter_mut()
+        .find(|r| r.investor == investor_key)
     {
-        let mut pool = ctx.accounts.investor_pool.load_mut()?;
-        let count = pool.count as usize;
-        if let Some(record) = pool.investors[..count]
-            .iter_mut()
-            .find(|r| r.investor == investor_key)
-        {
-            record.aat_volume = new_volume;
-        }
+        record.aat_volume = new_volume;
     }
 
     Ok(())

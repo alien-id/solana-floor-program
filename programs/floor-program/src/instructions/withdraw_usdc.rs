@@ -23,7 +23,7 @@ pub struct WithdrawUsdc<'info> {
         seeds = [INVESTOR_POOL_SEED],
         bump,
     )]
-    pub investor_pool: AccountLoader<'info, InvestorPool>,
+    pub investor_pool: Account<'info, InvestorPool>,
 
     pub usdc_mint: InterfaceAccount<'info, Mint>,
 
@@ -55,17 +55,20 @@ pub fn handler(ctx: Context<WithdrawUsdc>, amount: u64) -> Result<()> {
     {
         let state = ctx.accounts.contract_state.load()?;
         require!(state.frozen == 0, FloorError::ContractFrozen);
-        require!(ctx.accounts.usdc_mint.key() == state.usdc_mint, FloorError::InvalidMint);
+        require!(
+            ctx.accounts.usdc_mint.key() == state.usdc_mint,
+            FloorError::InvalidMint
+        );
         state_bump = state.bump;
         usdc_decimals = ctx.accounts.usdc_mint.decimals;
     }
 
     {
         let investor_key = ctx.accounts.investor.key();
-        let mut pool = ctx.accounts.investor_pool.load_mut()?;
-        let count = pool.count as usize;
-
-        let record = pool.investors[..count]
+        let record = ctx
+            .accounts
+            .investor_pool
+            .investors
             .iter_mut()
             .find(|r| r.investor == investor_key)
             .ok_or(FloorError::InvalidInvestor)?;
@@ -74,7 +77,11 @@ pub fn handler(ctx: Context<WithdrawUsdc>, amount: u64) -> Result<()> {
         require!(now >= record.usdc_unlock_ts, FloorError::UsdcLocked);
 
         let available = record.usdc_deposited;
-        withdraw_amount = if amount == u64::MAX { available } else { amount };
+        withdraw_amount = if amount == u64::MAX {
+            available
+        } else {
+            amount
+        };
 
         require!(withdraw_amount > 0, FloorError::ZeroAmount);
         require!(withdraw_amount <= available, FloorError::InsufficientFunds);

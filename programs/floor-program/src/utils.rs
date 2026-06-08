@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
-use spl_token_2022::extension::{BaseStateWithExtensions, StateWithExtensions};
 use spl_token_2022::extension::transfer_hook::TransferHook;
+use spl_token_2022::extension::{BaseStateWithExtensions, StateWithExtensions};
 use spl_token_2022::state::Mint;
 use spl_token_metadata_interface::state::TokenMetadata;
 
@@ -48,8 +48,7 @@ pub fn get_hook_program_id(mint_info: &AccountInfo) -> Result<Pubkey> {
     let data = mint_info.try_borrow_data()?;
     let mint = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&data)?;
     let hook = mint.get_extension::<TransferHook>()?;
-    Option::<Pubkey>::from(hook.program_id)
-        .ok_or(FloorError::InvalidHookAccounts.into())
+    Option::<Pubkey>::from(hook.program_id).ok_or(FloorError::InvalidHookAccounts.into())
 }
 
 pub fn validate_hook_accounts(
@@ -60,11 +59,12 @@ pub fn validate_hook_accounts(
 ) -> Result<()> {
     require!(remaining.len() == 8, FloorError::InvalidHookAccountsCount);
 
-    let (expected_config, _) = Pubkey::find_program_address(
-        &[b"config", mint.as_ref()],
-        hook_program_id,
+    let (expected_config, _) =
+        Pubkey::find_program_address(&[b"config", mint.as_ref()], hook_program_id);
+    require!(
+        remaining[0].key() == expected_config,
+        FloorError::InvalidHookAccounts
     );
-    require!(remaining[0].key() == expected_config, FloorError::InvalidHookAccounts);
 
     let config_data = remaining[0].try_borrow_data()?;
     require!(config_data.len() >= 136, FloorError::InvalidHookAccounts);
@@ -73,29 +73,53 @@ pub fn validate_hook_accounts(
     let sas_program = Pubkey::from(<[u8; 32]>::try_from(&config_data[104..136]).unwrap());
     drop(config_data);
 
-    require!(remaining[1].key() == credential, FloorError::InvalidHookAccounts);
-    require!(remaining[2].key() == schema, FloorError::InvalidHookAccounts);
-    require!(remaining[3].key() == sas_program, FloorError::InvalidHookAccounts);
+    require!(
+        remaining[1].key() == credential,
+        FloorError::InvalidHookAccounts
+    );
+    require!(
+        remaining[2].key() == schema,
+        FloorError::InvalidHookAccounts
+    );
+    require!(
+        remaining[3].key() == sas_program,
+        FloorError::InvalidHookAccounts
+    );
 
     let (expected_attestation, _) = Pubkey::find_program_address(
-        &[b"attestation", credential.as_ref(), schema.as_ref(), owner.as_ref()],
+        &[
+            b"attestation",
+            credential.as_ref(),
+            schema.as_ref(),
+            owner.as_ref(),
+        ],
         &sas_program,
     );
-    require!(remaining[4].key() == expected_attestation, FloorError::InvalidHookAccounts);
+    require!(
+        remaining[4].key() == expected_attestation,
+        FloorError::InvalidHookAccounts
+    );
 
     let (expected_whitelist, _) = Pubkey::find_program_address(
         &[b"whitelist", mint.as_ref(), owner.as_ref()],
         hook_program_id,
     );
-    require!(remaining[5].key() == expected_whitelist, FloorError::InvalidHookAccounts);
-
-    require!(remaining[6].key() == *hook_program_id, FloorError::InvalidHookAccounts);
-
-    let (expected_extra_meta, _) = Pubkey::find_program_address(
-        &[b"extra-account-metas", mint.as_ref()],
-        hook_program_id,
+    require!(
+        remaining[5].key() == expected_whitelist,
+        FloorError::InvalidHookAccounts
     );
-    require!(remaining[7].key() == expected_extra_meta, FloorError::InvalidHookAccounts);
+
+    require!(
+        remaining[6].key() == *hook_program_id,
+        FloorError::InvalidHookAccounts
+    );
+
+    let (expected_extra_meta, _) =
+        Pubkey::find_program_address(&[b"extra-account-metas", mint.as_ref()], hook_program_id);
+    require!(
+        remaining[7].key() == expected_extra_meta,
+        FloorError::InvalidHookAccounts
+    );
 
     Ok(())
 }

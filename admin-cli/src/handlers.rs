@@ -3,15 +3,12 @@ use crate::utils::{
     get_nft_authority_address, get_program_data_address, get_treasury_address,
     get_usdc_vault_address, get_waln_vault_address,
 };
-use anchor_client::{
-    solana_sdk::pubkey::Pubkey,
-    Program,
-};
-use anchor_lang::solana_program::system_program;
+use anchor_client::solana_sdk::signature::Keypair;
+use anchor_client::{solana_sdk::pubkey::Pubkey, Program};
+use anchor_lang::{solana_program::system_program, AccountDeserialize};
 use anyhow::{anyhow, Result};
 use floor_program::state::{InvestorPool, ProgramState};
 use std::sync::Arc;
-use anchor_client::solana_sdk::signature::Keypair;
 
 fn load_zero_copy<T: bytemuck::Pod>(
     rpc: &solana_rpc_client::rpc_client::RpcClient,
@@ -32,6 +29,15 @@ fn load_zero_copy<T: bytemuck::Pod>(
     Ok(*value)
 }
 
+fn load_anchor_account<T: AccountDeserialize>(
+    rpc: &solana_rpc_client::rpc_client::RpcClient,
+    pubkey: &Pubkey,
+) -> Result<T> {
+    let account = rpc.get_account(pubkey)?;
+    let mut data: &[u8] = &account.data;
+    T::try_deserialize(&mut data).map_err(|e| anyhow!("Failed to deserialize account: {}", e))
+}
+
 pub fn handle_info(program: &Program<Arc<Keypair>>) -> Result<()> {
     let program_id = program.id();
     let (contract_state_pubkey, _) = get_contract_state_address(&program_id);
@@ -42,7 +48,7 @@ pub fn handle_info(program: &Program<Arc<Keypair>>) -> Result<()> {
 
     let rpc = program.rpc();
     let state = load_zero_copy::<ProgramState>(&rpc, &contract_state_pubkey)?;
-    let pool = load_zero_copy::<InvestorPool>(&rpc, &investor_pool_pubkey)?;
+    let pool = load_anchor_account::<InvestorPool>(&rpc, &investor_pool_pubkey)?;
 
     let usdc_scale = 10_f64.powi(state.usdc_decimals as i32);
     let waln_scale = 10_f64.powi(state.waln_decimals as i32);
@@ -62,10 +68,16 @@ pub fn handle_info(program: &Program<Arc<Keypair>>) -> Result<()> {
 
     println!("\n=== Floor Program State ===\n");
     println!("Program ID:     {}", program_id);
-    println!("Contract State: {} (must be whitelisted in transfer hook)", contract_state_pubkey);
+    println!(
+        "Contract State: {} (must be whitelisted in transfer hook)",
+        contract_state_pubkey
+    );
     println!("Admin:          {}", state.admin);
     if state.pending_admin != Pubkey::default() {
-        println!("Pending Admin:  {} (transfer in progress)", state.pending_admin);
+        println!(
+            "Pending Admin:  {} (transfer in progress)",
+            state.pending_admin
+        );
     }
     println!("USDC Mint:      {}", state.usdc_mint);
     println!("WALN Mint:      {}", state.waln_mint);
@@ -101,7 +113,10 @@ pub fn handle_info(program: &Program<Arc<Keypair>>) -> Result<()> {
         state.round_size_waln as f64 / waln_scale
     );
     println!("Lock Period:    {} seconds", state.lock_period_seconds);
-    println!("USDC Withdraw Lock: {} seconds", state.usdc_withdraw_lock_seconds);
+    println!(
+        "USDC Withdraw Lock: {} seconds",
+        state.usdc_withdraw_lock_seconds
+    );
     println!("Sell Paused:    {}", state.sell_paused == 1);
     println!("Frozen:         {}", state.frozen == 1);
 
@@ -142,12 +157,11 @@ pub fn handle_info(program: &Program<Arc<Keypair>>) -> Result<()> {
         state.waln_dust_carryover as f64 / waln_scale
     );
 
-    println!("\n--- Investor Pool ({} investors) ---", pool.count);
-    let count = pool.count as usize;
-    for record in pool.investors[..count].iter() {
-        if record.investor == Pubkey::default() {
-            continue;
-        }
+    println!(
+        "\n--- Investor Pool ({} investors) ---",
+        pool.investors.len()
+    );
+    for record in pool.investors.iter() {
         println!(
             "  {} | deposited: {:.6} USDC | locked: {:.6} USDC | committed: {:.6} USDC | waln: {:.6} WALN | aat: {} | usdc_unlock_ts: {}",
             record.investor,
@@ -392,10 +406,7 @@ pub fn handle_withdraw_treasury(
     Ok(())
 }
 
-pub fn handle_transfer_authority(
-    program: &Program<Arc<Keypair>>,
-    new_admin: Pubkey,
-) -> Result<()> {
+pub fn handle_transfer_authority(program: &Program<Arc<Keypair>>, new_admin: Pubkey) -> Result<()> {
     let program_id = program.id();
     let (contract_state, _) = get_contract_state_address(&program_id);
 
@@ -443,7 +454,10 @@ pub fn handle_set_usdc_withdraw_lock(
     let program_id = program.id();
     let (contract_state, _) = get_contract_state_address(&program_id);
 
-    println!("Setting USDC withdraw lock to: {} seconds", new_lock_seconds);
+    println!(
+        "Setting USDC withdraw lock to: {} seconds",
+        new_lock_seconds
+    );
 
     let tx = program
         .request()

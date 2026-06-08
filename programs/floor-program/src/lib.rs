@@ -15,9 +15,9 @@ security_txt! {
 
 pub mod errors;
 pub mod instructions;
-pub mod utils;
 pub mod seeds;
 pub mod state;
+pub mod utils;
 
 use instructions::*;
 
@@ -33,12 +33,7 @@ pub mod floor_program {
         round_size_waln: u64,
         lock_period_seconds: i64,
     ) -> Result<()> {
-        initialize::handler(
-            ctx,
-            floor_price_usdc,
-            round_size_waln,
-            lock_period_seconds,
-        )
+        initialize::handler(ctx, floor_price_usdc, round_size_waln, lock_period_seconds)
     }
 
     pub fn set_floor_price(ctx: Context<AdminOnly>, new_price_usdc: u64) -> Result<()> {
@@ -81,9 +76,7 @@ pub mod floor_program {
         admin::remove_investor_from_pool(ctx)
     }
 
-    pub fn close_round<'info>(
-        ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>,
-    ) -> Result<()> {
+    pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>) -> Result<()> {
         close_round::close_round(ctx)
     }
 

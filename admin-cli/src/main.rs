@@ -1,9 +1,10 @@
 use admin_cli::handlers::{
     handle_accept_authority, handle_cancel_round, handle_fund_treasury, handle_info,
-    handle_initialize, handle_mint_aat_nft, handle_set_floor_price, handle_set_investor_usdc_unlock,
-    handle_set_frozen, handle_set_lock_period, handle_set_round_size, handle_set_sell_paused,
-    handle_set_usdc_withdraw_lock,
-    handle_transfer_authority, handle_withdraw_treasury, handle_update_aat_volume, handle_remove_investor_from_pool,
+    handle_initialize, handle_mint_aat_nft, handle_remove_investor_from_pool,
+    handle_set_floor_price, handle_set_frozen, handle_set_investor_usdc_unlock,
+    handle_set_lock_period, handle_set_round_size, handle_set_sell_paused,
+    handle_set_usdc_withdraw_lock, handle_transfer_authority, handle_update_aat_volume,
+    handle_withdraw_treasury,
 };
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
 use anchor_client::solana_sdk::pubkey::Pubkey;
@@ -113,7 +114,8 @@ fn get_program_client(
         let bytes = bs58::decode(content.trim())
             .into_vec()
             .map_err(|e| anyhow!("Failed to decode base58 keypair: {}", e))?;
-        Keypair::try_from(bytes.as_slice()).map_err(|e| anyhow!("Failed to parse keypair: {}", e))?
+        Keypair::try_from(bytes.as_slice())
+            .map_err(|e| anyhow!("Failed to parse keypair: {}", e))?
     } else {
         read_keypair_file(shellexpand::tilde(keypair_path).to_string())
             .map_err(|e| anyhow!("Failed to read keypair file: {}", e))?
@@ -183,9 +185,9 @@ fn main() -> Result<()> {
         Commands::SetFloorPrice { new_price_usdc } => {
             handle_set_floor_price(&program, new_price_usdc)?
         }
-        Commands::SetRoundSize { new_round_size_waln } => {
-            handle_set_round_size(&program, new_round_size_waln)?
-        }
+        Commands::SetRoundSize {
+            new_round_size_waln,
+        } => handle_set_round_size(&program, new_round_size_waln)?,
         Commands::SetLockPeriod { new_lock_period } => {
             handle_set_lock_period(&program, new_lock_period)?
         }
