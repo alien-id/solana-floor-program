@@ -13,16 +13,6 @@ import {
 import { FloorProgram } from "../target/types/floor_program";
 import { buildHookAccountsWithBumps } from "./utils";
 
-export interface RoundRecordData {
-  roundIndex: bigint;
-  triggeredAt: bigint;
-  walnPurchased: bigint;
-  usdcSpent: bigint;
-  totalAatVolumeAtTrigger: bigint;
-  participantCount: number;
-  bump: number;
-}
-
 export interface InvestorRecordData {
   investor: PublicKey;
   usdcDeposited: BN;
@@ -110,13 +100,6 @@ export class FloorSdk {
     );
   }
 
-  roundRecordPda(roundIndex: BN): [PublicKey, number] {
-    const roundBuf = roundIndex.toArrayLike(Buffer, "le", 8);
-    return PublicKey.findProgramAddressSync(
-      [Buffer.from("round_record"), roundBuf],
-      this.programId
-    );
-  }
 
   /** Shared PDA that acts as mint authority for all AAT NFTs. */
   nftAuthorityPda(): [PublicKey, number] {
@@ -327,8 +310,8 @@ export class FloorSdk {
   /**
    * Build a sellWaln instruction.
    *
-   * roundTriggerAccounts format (new architecture):
-   *   [roundRecord, lockedWaln_investor1, lockedWaln_investor2, ...]
+   * roundTriggerAccounts format:
+   *   [roundLockedWaln]
    *
    * Only needed when the sell will trigger round-end (current_round_waln + amount >= round_size).
    * investor_pool is always passed as a named account (not remaining accounts).
@@ -561,19 +544,6 @@ export class FloorSdk {
           } as any)
           .instruction();
       },
-      closeRoundRecord: (roundIndex: BN): Promise<TransactionInstruction> => {
-        const [roundRecord] = this.roundRecordPda(roundIndex);
-        const [treasury] = this.treasuryPda();
-        return this.program.methods
-          .closeRoundRecord(roundIndex)
-          .accounts({
-            admin: adminPubkey,
-            contractState,
-            roundRecord,
-            treasury,
-          } as any)
-          .instruction();
-      },
       cancelRound: (): Promise<TransactionInstruction> =>
         this.program.methods
           .cancelRound()
@@ -606,7 +576,6 @@ export class FloorSdk {
         );
         const roundIndex = state.roundCount as BN;
         const [treasury] = this.treasuryPda();
-        const [roundRecord] = this.roundRecordPda(roundIndex);
         const [roundLockedWaln] = this.roundLockedWalnPda(roundIndex);
         return this.program.methods
           .closeRound()
@@ -618,7 +587,6 @@ export class FloorSdk {
             systemProgram: SystemProgram.programId,
           } as any)
           .remainingAccounts([
-            { pubkey: roundRecord, isSigner: false, isWritable: true },
             { pubkey: roundLockedWaln, isSigner: false, isWritable: true },
           ])
           .instruction();
@@ -643,47 +611,4 @@ export class FloorSdk {
       .instruction();
   }
 
-  /**
-   * Fetch and decode the RoundRecord account for a given round index.
-   *
-   * RoundRecord is created via raw CPI and is not an Anchor account type
-   * in the IDL, so we decode the bytes manually here.
-   */
-  async fetchRoundRecord(roundIndex: BN): Promise<RoundRecordData> {
-    const [roundRecordPda] = this.roundRecordPda(roundIndex);
-    const info = await this.provider.connection.getAccountInfo(roundRecordPda);
-    if (!info) {
-      throw new Error(
-        `RoundRecord account not found for roundIndex=${roundIndex.toString()}`
-      );
-    }
-
-    // Account layout (all LE) after 8-byte discriminator:
-    // offset 0: round_index (u64)
-    // offset 8: triggered_at (i64)
-    // offset 16: waln_purchased (u64)
-    // offset 24: usdc_spent (u64)
-    // offset 32: total_aat_volume_at_trigger (u64)
-    // offset 40: participant_count (u32)
-    // offset 44: bump (u8)
-    const buf = Buffer.from(info.data).subarray(8);
-
-    const roundIndexDecoded = buf.readBigUInt64LE(0);
-    const triggeredAt = buf.readBigInt64LE(8);
-    const walnPurchased = buf.readBigUInt64LE(16);
-    const usdcSpent = buf.readBigUInt64LE(24);
-    const totalAatVolumeAtTrigger = buf.readBigUInt64LE(32);
-    const participantCount = buf.readUInt32LE(40);
-    const bump = buf.readUInt8(44);
-
-    return {
-      roundIndex: roundIndexDecoded,
-      triggeredAt,
-      walnPurchased,
-      usdcSpent,
-      totalAatVolumeAtTrigger,
-      participantCount,
-      bump,
-    };
-  }
 }

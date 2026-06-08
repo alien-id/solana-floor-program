@@ -13,12 +13,12 @@ use anchor_spl::token_interface::{
 use crate::errors::FloorError;
 use crate::instructions::start_round::execute_round_start;
 use crate::seeds::{
-    CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, ROUND_LOCKED_WALN_SEED, ROUND_RECORD_SEED,
-    TREASURY_SEED, USDC_VAULT_SEED, WALN_VAULT_SEED,
+    CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, ROUND_LOCKED_WALN_SEED, TREASURY_SEED,
+    USDC_VAULT_SEED, WALN_VAULT_SEED,
 };
 use crate::state::{
     InvestorAlloc, InvestorAllocated, InvestorPool, ProgramState, RoundClosed, RoundLockedWaln,
-    RoundRecord, MIN_SELL_WALN,
+    MIN_SELL_WALN,
 };
 use crate::utils::{get_hook_program_id, validate_hook_accounts};
 
@@ -187,9 +187,6 @@ pub fn handler<'info>(
         0u64
     };
 
-    let (round_record_pda, round_record_bump) =
-        Pubkey::find_program_address(&[ROUND_RECORD_SEED, &round_index.to_le_bytes()], &crate::ID);
-
     let waln_scale = 10_u128.pow(waln_decimals as u32);
 
     let usdc_out_u128 = (waln_amount as u128)
@@ -291,7 +288,7 @@ pub fn handler<'info>(
 
     if state.current_round_waln >= current_round_size_waln {
         let remaining = &ctx.remaining_accounts[hook_offset..];
-        require!(remaining.len() >= 2, FloorError::InvalidRemainingAccounts);
+        require!(!remaining.is_empty(), FloorError::InvalidRemainingAccounts);
 
         let clock = Clock::get()?;
         let lock_period = state.current_round_lock_period;
@@ -303,13 +300,7 @@ pub fn handler<'info>(
             .checked_add(lock_period)
             .ok_or(FloorError::ArithmeticOverflow)?;
 
-        let round_record_info = &remaining[0];
-        let round_locked_waln_info = &remaining[1];
-
-        require!(
-            round_record_pda == round_record_info.key(),
-            FloorError::InvalidRemainingAccounts
-        );
+        let round_locked_waln_info = &remaining[0];
 
         let (round_locked_waln_pda, round_locked_waln_bump) = Pubkey::find_program_address(
             &[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes()],
@@ -528,88 +519,10 @@ pub fn handler<'info>(
             round_index,
             waln_purchased: total_waln_purchased,
             usdc_spent: total_usdc_spent,
+            total_aat_volume_at_trigger,
             participant_count,
             unlock: unlock_timestamp,
         });
-
-        let round_record_space = 8 + RoundRecord::INIT_SPACE;
-        let round_record_rent = Rent::get()?.minimum_balance(round_record_space);
-
-        let existing_round_record_lamports = round_record_info.lamports();
-        if existing_round_record_lamports == 0 {
-            invoke_signed(
-                &system_instruction::create_account(
-                    treasury_info.key,
-                    round_record_info.key,
-                    round_record_rent,
-                    round_record_space as u64,
-                    &crate::ID,
-                ),
-                &[
-                    treasury_info.clone(),
-                    round_record_info.clone(),
-                    system_program_info.clone(),
-                ],
-                &[
-                    &[TREASURY_SEED, &[treasury_bump]],
-                    &[
-                        ROUND_RECORD_SEED,
-                        &round_index.to_le_bytes(),
-                        &[round_record_bump],
-                    ],
-                ],
-            )?;
-        } else {
-            if existing_round_record_lamports < round_record_rent {
-                invoke_signed(
-                    &system_instruction::transfer(
-                        treasury_info.key,
-                        round_record_info.key,
-                        round_record_rent - existing_round_record_lamports,
-                    ),
-                    &[
-                        treasury_info.clone(),
-                        round_record_info.clone(),
-                        system_program_info.clone(),
-                    ],
-                    &[&[TREASURY_SEED, &[treasury_bump]]],
-                )?;
-            }
-            invoke_signed(
-                &system_instruction::allocate(round_record_info.key, round_record_space as u64),
-                &[round_record_info.clone(), system_program_info.clone()],
-                &[&[
-                    ROUND_RECORD_SEED,
-                    &round_index.to_le_bytes(),
-                    &[round_record_bump],
-                ]],
-            )?;
-            invoke_signed(
-                &system_instruction::assign(round_record_info.key, &crate::ID),
-                &[round_record_info.clone(), system_program_info.clone()],
-                &[&[
-                    ROUND_RECORD_SEED,
-                    &round_index.to_le_bytes(),
-                    &[round_record_bump],
-                ]],
-            )?;
-        }
-
-        {
-            let mut rr_data = round_record_info.try_borrow_mut_data()?;
-            rr_data[..8].copy_from_slice(RoundRecord::DISCRIMINATOR);
-            let record = RoundRecord {
-                round_index,
-                triggered_at: clock.unix_timestamp,
-                waln_purchased: total_waln_purchased,
-                usdc_spent: total_usdc_spent,
-                total_aat_volume_at_trigger,
-                participant_count,
-                bump: round_record_bump,
-            };
-            use anchor_lang::AnchorSerialize;
-            record.serialize(&mut &mut rr_data[8..])?;
-        }
 
         state.round_count = state
             .round_count

@@ -1,7 +1,7 @@
 use crate::errors::FloorError;
 use crate::seeds::{CONTRACT_STATE_SEED, ROUND_LOCKED_WALN_SEED, TREASURY_SEED, WALN_VAULT_SEED};
 use crate::state::{ProgramState, RoundLockedWaln, WalnClaimed};
-use crate::utils::{get_hook_program_id, validate_hook_accounts};
+use crate::utils::{close_to_treasury, get_hook_program_id, validate_hook_accounts};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::invoke_signed;
 use anchor_spl::associated_token::AssociatedToken;
@@ -161,16 +161,11 @@ pub fn handler<'info>(
     });
 
     if should_close {
-        let rlw_info = ctx.accounts.round_locked_waln.to_account_info();
-        let treasury_info = ctx.accounts.treasury.to_account_info();
-
-        let dest_starting = treasury_info.lamports();
-        **treasury_info.try_borrow_mut_lamports()? = dest_starting
-            .checked_add(rlw_info.lamports())
-            .ok_or(FloorError::ArithmeticOverflow)?;
-        **rlw_info.try_borrow_mut_lamports()? = 0;
-        rlw_info.assign(&System::id());
-        rlw_info.resize(0)?;
+        // The round is fully settled — reclaim the locked-wALN account's rent.
+        close_to_treasury(
+            &ctx.accounts.round_locked_waln.to_account_info(),
+            &ctx.accounts.treasury.to_account_info(),
+        )?;
     }
 
     Ok(())

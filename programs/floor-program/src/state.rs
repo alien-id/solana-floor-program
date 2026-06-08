@@ -88,18 +88,6 @@ impl InvestorPool {
     }
 }
 
-#[account]
-#[derive(InitSpace)]
-pub struct RoundRecord {
-    pub round_index: u64,
-    pub triggered_at: i64,
-    pub waln_purchased: u64,
-    pub usdc_spent: u64,
-    pub total_aat_volume_at_trigger: u64,
-    pub participant_count: u32,
-    pub bump: u8,
-}
-
 #[event]
 pub struct InvestorAllocated {
     pub round_index: u64,
@@ -114,6 +102,7 @@ pub struct RoundClosed {
     pub round_index: u64,
     pub waln_purchased: u64,
     pub usdc_spent: u64,
+    pub total_aat_volume_at_trigger: u64,
     pub participant_count: u32,
     pub unlock: i64,
 }

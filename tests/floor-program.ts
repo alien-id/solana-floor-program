@@ -158,20 +158,37 @@ describe("floor-program", () => {
 
     async function logRoundFinalizeRent(
         label: string,
-        roundRecord: PublicKey,
         roundLockedWaln: PublicKey,
-        beforeRoundRecordLamports: number,
         beforeRoundLockedWalnLamports: number
     ): Promise<void> {
-        const afterRoundRecordLamports = await getAccountLamports(roundRecord);
         const afterRoundLockedWalnLamports = await getAccountLamports(roundLockedWaln);
-        const roundRecordRent = Math.max(afterRoundRecordLamports - beforeRoundRecordLamports, 0);
         const roundLockedWalnRent = Math.max(afterRoundLockedWalnLamports - beforeRoundLockedWalnLamports, 0);
-        const totalRent = roundRecordRent + roundLockedWalnRent;
+        const totalRent = roundLockedWalnRent;
 
         console.log(`    [RENT] ${label}: ${totalRent} lamports (${formatSol(totalRent)} SOL)`);
-        console.log(`    [RENT]   RoundRecord: ${roundRecordRent} lamports (${formatSol(roundRecordRent)} SOL), refundable: yes via closeRoundRecord`);
         console.log(`    [RENT]   RoundLockedWaln: ${roundLockedWalnRent} lamports (${formatSol(roundLockedWalnRent)} SOL), refundable: yes to treasury after final claim`);
+    }
+
+    // Round summaries (waln_purchased, usdc_spent, total_aat_volume_at_trigger,
+    // participant_count) now live in the RoundClosed event rather than an on-chain
+    // RoundRecord account. Decode it from the round-trigger transaction's logs.
+    async function getRoundClosedEvent(signature: string): Promise<any> {
+        await sleep(1000);
+        const tx = await provider.connection.getTransaction(signature, {
+            commitment: "confirmed",
+            maxSupportedTransactionVersion: 0,
+        });
+        const logs = tx?.meta?.logMessages ?? [];
+        const parser = new anchor.EventParser(
+            sdk.program.programId,
+            sdk.program.coder
+        );
+        for (const event of parser.parseLogs(logs)) {
+            if (event.name === "roundClosed" || event.name === "RoundClosed") {
+                return event.data;
+            }
+        }
+        throw new Error(`RoundClosed event not found in tx ${signature}`);
     }
 
     async function getOracleSignature(
@@ -2003,11 +2020,9 @@ describe("floor-program", () => {
     describe("sell_waln round trigger", () => {
         it("triggers round end + round start when threshold is hit", async () => {
             const round0 = new BN(0);
-            const [roundRecord0] = sdk.roundRecordPda(round0);
             const [roundLockedWaln0] = sdk.roundLockedWalnPda(round0);
 
             const sellerUsdcBefore = await getTokenBalance(provider, sellerUsdcAcc);
-            const beforeRoundRecordLamports = await getAccountLamports(roundRecord0);
             const beforeRoundLockedWalnLamports = await getAccountLamports(roundLockedWaln0);
 
             const triggerSig = await provider.sendAndConfirm(
@@ -2021,7 +2036,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: SELL_AMOUNT_TRIGGER,
                         roundTriggerAccounts: [
-                            {pubkey: roundRecord0, isWritable: true},
                             {pubkey: roundLockedWaln0, isWritable: true},
                         ],
                     })
@@ -2037,9 +2051,7 @@ describe("floor-program", () => {
             console.log(`    [CU] sell_waln TRIGGER (round-end + round-start, 2 investors): ${triggerTx?.meta?.computeUnitsConsumed}`);
             await logRoundFinalizeRent(
                 "sell_waln round finalization",
-                roundRecord0,
                 roundLockedWaln0,
-                beforeRoundRecordLamports,
                 beforeRoundLockedWalnLamports
             );
 
@@ -2049,13 +2061,13 @@ describe("floor-program", () => {
                 BigInt(10 * USDC_UNIT)
             );
 
-            // ---- verify RoundRecord created ----
-            const rr = await sdk.fetchRoundRecord(round0);
-            assert.equal(rr.roundIndex, 0n);
-            assert.equal(rr.walnPurchased, 200_000_000_000n);
-            assert.equal(rr.usdcSpent, 20_000_000n);
-            assert.equal(rr.totalAatVolumeAtTrigger, 150000n);
-            assert.equal(rr.participantCount, 2);
+            // ---- verify RoundClosed event ----
+            const closed = await getRoundClosedEvent(triggerSig);
+            assert.equal(closed.roundIndex.toString(), "0");
+            assert.equal(closed.walnPurchased.toString(), "200000000000");
+            assert.equal(closed.usdcSpent.toString(), "20000000");
+            assert.equal(closed.totalAatVolumeAtTrigger.toString(), "150000");
+            assert.equal(closed.participantCount, 2);
 
             // ---- verify ContractState updated ----
             const state = await sdk.program.account.programState.fetch(contractState);
@@ -2442,7 +2454,6 @@ describe("floor-program", () => {
 
             const mid = await sdk.program.account.programState.fetch(contractState);
             const roundBn = new BN(mid.roundCount.toNumber());
-            const [roundRecord] = sdk.roundRecordPda(roundBn);
             const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
             const newRemaining = mid.currentRoundSizeWaln.sub(mid.currentRoundWaln);
 
@@ -2459,7 +2470,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: gap,
                         roundTriggerAccounts: [
-                            {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
@@ -2556,7 +2566,6 @@ describe("floor-program", () => {
             const stateBefore = await sdk.program.account.programState.fetch(contractState);
             const roundIndex = stateBefore.roundCount; // 3
             const roundBn = new BN(roundIndex.toNumber());
-            const [roundRecord] = sdk.roundRecordPda(roundBn);
             const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
 
             await provider.sendAndConfirm(
@@ -2571,7 +2580,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: new BN(100 * WALN_UNIT),
                         roundTriggerAccounts: [
-                            {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
@@ -2649,7 +2657,6 @@ describe("floor-program", () => {
         it("oversized max clamps to the snapshotted round size (200), not the live 400", async () => {
             const before = await sdk.program.account.programState.fetch(contractState);
             const roundBn = new BN(before.roundCount.toNumber());
-            const [roundRecord] = sdk.roundRecordPda(roundBn);
             const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
             const snapshotRemaining = before.currentRoundSizeWaln.sub(before.currentRoundWaln);
             assert.ok(snapshotRemaining.eq(new BN(200 * WALN_UNIT)), "round is capped at the snapshotted 200");
@@ -2667,7 +2674,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: new BN(400 * WALN_UNIT),
                         roundTriggerAccounts: [
-                            {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
@@ -2742,7 +2748,6 @@ describe("floor-program", () => {
                 const remaining = state.currentRoundSizeWaln.sub(state.currentRoundWaln);
                 if (remaining.gtn(0)) {
                     const roundBn = new BN(state.roundCount.toNumber());
-                    const [roundRecord] = sdk.roundRecordPda(roundBn);
                     const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
                     await provider.sendAndConfirm(
                         new Transaction().add(
@@ -2756,7 +2761,6 @@ describe("floor-program", () => {
                                 walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                                 maxWalnAmount: remaining,
                                 roundTriggerAccounts: [
-                                    {pubkey: roundRecord, isWritable: true},
                                     {pubkey: roundLockedWaln, isWritable: true},
                                 ],
                             })
@@ -2772,12 +2776,11 @@ describe("floor-program", () => {
             const oldDust = BigInt(stateBefore.walnDustCarryover.toString());
             const roundIndex = stateBefore.roundCount;
             const roundBn = new BN(roundIndex.toNumber());
-            const [roundRecord] = sdk.roundRecordPda(roundBn);
             const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
 
             const walnInRound = BigInt(stateBefore.currentRoundSizeWaln.toString());
 
-            await provider.sendAndConfirm(
+            const triggerSig = await provider.sendAndConfirm(
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.sellWalnIx({
@@ -2789,7 +2792,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
                         roundTriggerAccounts: [
-                            {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
@@ -2800,8 +2802,8 @@ describe("floor-program", () => {
             const stateAfter = await sdk.program.account.programState.fetch(contractState);
             const newDust = BigInt(stateAfter.walnDustCarryover.toString());
 
-            const rr = await sdk.fetchRoundRecord(roundBn);
-            const totalWalnPurchased = rr.walnPurchased;
+            const closed = await getRoundClosedEvent(triggerSig);
+            const totalWalnPurchased = BigInt(closed.walnPurchased.toString());
 
             assert.equal(
                 totalWalnPurchased + newDust,
@@ -2817,10 +2819,9 @@ describe("floor-program", () => {
 
             const roundIndex = stateBefore.roundCount;
             const roundBn = new BN(roundIndex.toNumber());
-            const [roundRecord] = sdk.roundRecordPda(roundBn);
             const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
 
-            await provider.sendAndConfirm(
+            const triggerSig = await provider.sendAndConfirm(
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.sellWalnIx({
@@ -2832,7 +2833,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
                         roundTriggerAccounts: [
-                            {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
@@ -2841,11 +2841,12 @@ describe("floor-program", () => {
             );
 
             const stateAfter = await sdk.program.account.programState.fetch(contractState);
-            const rr = await sdk.fetchRoundRecord(roundBn);
+            const closed = await getRoundClosedEvent(triggerSig);
+            const walnPurchased = BigInt(closed.walnPurchased.toString());
             const newDust = BigInt(stateAfter.walnDustCarryover.toString());
             const walnInRound = BigInt(stateBefore.currentRoundSizeWaln.toString());
 
-            assert.equal(rr.walnPurchased, walnInRound);
+            assert.equal(walnPurchased, walnInRound);
             assert.equal(newDust, 0n);
         });
     });
@@ -2871,7 +2872,6 @@ describe("floor-program", () => {
             assert.ok(stateMid.lockPeriodSeconds.eq(NEW_LOCK));
 
             const roundBn = new BN(stateMid.roundCount.toNumber());
-            const [roundRecord] = sdk.roundRecordPda(roundBn);
             const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
             const remaining = stateMid.currentRoundSizeWaln.sub(stateMid.currentRoundWaln);
             const nowApprox = Math.floor(Date.now() / 1000);
@@ -2888,7 +2888,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: remaining,
                         roundTriggerAccounts: [
-                            {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
@@ -3163,9 +3162,7 @@ describe("floor-program", () => {
             assert.equal(stateBefore.roundStarted, 1, "round must be active before close");
 
             closedRoundIdx = new BN(stateBefore.roundCount.toString());
-            const [roundRecord] = sdk.roundRecordPda(closedRoundIdx);
             const [roundLockedWaln] = sdk.roundLockedWalnPda(closedRoundIdx);
-            const beforeRoundRecordLamports = await getAccountLamports(roundRecord);
             const beforeRoundLockedWalnLamports = await getAccountLamports(roundLockedWaln);
             const floorPrice = BigInt(stateBefore.currentRoundFloorPrice.toString());
             const walnScale = BigInt(WALN_UNIT);
@@ -3182,7 +3179,7 @@ describe("floor-program", () => {
             const purchased2Before = BigInt(e2Before!.walnPurchasedTotal.toString());
             assert.ok(locked1 > 0n && locked2 > 0n, "both investors should have locked funds");
 
-            await provider.sendAndConfirm(
+            const closeSig = await provider.sendAndConfirm(
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.admin(admin.publicKey).closeRound()
@@ -3190,9 +3187,7 @@ describe("floor-program", () => {
             );
             await logRoundFinalizeRent(
                 "close_round forced finalization",
-                roundRecord,
                 roundLockedWaln,
-                beforeRoundRecordLamports,
                 beforeRoundLockedWalnLamports
             );
 
@@ -3206,10 +3201,10 @@ describe("floor-program", () => {
                 "round_count must increment"
             );
 
-            // --- RoundRecord written for the closed round. ---
-            const rr = await sdk.fetchRoundRecord(closedRoundIdx);
-            const walnPurchased = BigInt(rr.walnPurchased.toString());
-            assert.ok(walnPurchased > 0n, "round record must record purchased wALN");
+            // --- RoundClosed event reports the round summary. ---
+            const closed = await getRoundClosedEvent(closeSig);
+            const walnPurchased = BigInt(closed.walnPurchased.toString());
+            assert.ok(walnPurchased > 0n, "round must record purchased wALN");
             assert.ok(
                 walnPurchased <= walnInRoundBefore,
                 "purchased cannot exceed wALN actually delivered to the round"
@@ -3396,7 +3391,6 @@ describe("floor-program", () => {
             //    After this trigger, round N+1 auto-starts and locks all 102 investors.
             const stateNow = await sdk.program.account.programState.fetch(contractState);
             const currentRoundIdx = new BN(stateNow.roundCount.toString());
-            const [roundRecordNow] = sdk.roundRecordPda(currentRoundIdx);
             const [roundLockedWalnNow] = sdk.roundLockedWalnPda(currentRoundIdx);
 
             const remainingToSell = new BN(
@@ -3415,7 +3409,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: remainingToSell,
                         roundTriggerAccounts: [
-                            {pubkey: roundRecordNow, isWritable: true},
                             {pubkey: roundLockedWalnNow, isWritable: true},
                         ],
                     })
@@ -3429,7 +3422,6 @@ describe("floor-program", () => {
             assert.equal(stateBefore.roundStarted, 1, "round should be auto-started");
 
             const roundIdx = new BN(stateBefore.roundCount.toString());
-            const [roundRecord] = sdk.roundRecordPda(roundIdx);
             const [roundLockedWaln] = sdk.roundLockedWalnPda(roundIdx);
 
             const roundSizeWaln = new BN(stateBefore.currentRoundSizeWaln.toString());
@@ -3446,7 +3438,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: roundSizeWaln,
                         roundTriggerAccounts: [
-                            {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
@@ -3467,10 +3458,15 @@ describe("floor-program", () => {
             const investorPoolLamports100 = await provider.connection.getBalance(sdk.investorPoolPda()[0]);
             console.log(`    [LAMPORTS] InvestorPool account (100-investor): ${investorPoolLamports100} lamports`);
 
-            // Verify round record was created with 100 participants
-            const rr = await sdk.fetchRoundRecord(roundIdx);
+            // Verify all 100 participants are recorded. The RoundClosed event can't be
+            // used here: sell_waln emits 100 InvestorAllocated data-logs before it, so
+            // the event line is past Solana's ~10KB log-truncation limit. Read the
+            // participant count straight from the on-chain RoundLockedWaln account.
+            const rlw100 = await sdk.program.account.roundLockedWaln.fetch(
+                roundLockedWaln
+            );
             assert.equal(
-                rr.participantCount,
+                (rlw100.investors as any[]).length,
                 100,
                 "all 100 investors (2 original + 98 new) should participate"
             );

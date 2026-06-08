@@ -51,7 +51,6 @@ async function main() {
     contractStatePda
   );
   const currentRoundIndex = new BN(stateAccount.roundCount.toString());
-  const [roundRecord] = sdk.roundRecordPda(currentRoundIndex);
   const [roundLockedWaln] = sdk.roundLockedWalnPda(currentRoundIndex);
 
   const ix = await sdk.sellWalnIx({
@@ -63,7 +62,6 @@ async function main() {
     maxWalnAmount: walnAmount,
     walnTokenProgram: TOKEN_2022_PROGRAM_ID,
     roundTriggerAccounts: [
-      { pubkey: roundRecord, isWritable: true },
       { pubkey: roundLockedWaln, isWritable: true },
     ],
   });

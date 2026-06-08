@@ -44,6 +44,24 @@ pub fn verify_aat_nft_and_get_allocation(
     Err(error!(FloorError::InvalidAatNft))
 }
 
+/// Closes a program-owned account by draining its lamports into `treasury` and
+/// reassigning it to the System Program. Idempotent: a no-op when the account is not
+/// owned by this program or already has zero lamports (e.g. it was closed earlier),
+/// so callers can invoke it unconditionally on the round-settlement path.
+pub fn close_to_treasury(account: &AccountInfo, treasury: &AccountInfo) -> Result<()> {
+    if account.owner != &crate::ID || account.lamports() == 0 {
+        return Ok(());
+    }
+    let dest_starting = treasury.lamports();
+    **treasury.try_borrow_mut_lamports()? = dest_starting
+        .checked_add(account.lamports())
+        .ok_or(FloorError::ArithmeticOverflow)?;
+    **account.try_borrow_mut_lamports()? = 0;
+    account.assign(&System::id());
+    account.resize(0)?;
+    Ok(())
+}
+
 pub fn get_hook_program_id(mint_info: &AccountInfo) -> Result<Pubkey> {
     let data = mint_info.try_borrow_data()?;
     let mint = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&data)?;
