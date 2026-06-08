@@ -1,0 +1,32 @@
+name: Release program .so
+
+# On a version tag, build the floor program .so with Anchor and attach it to the
+# GitHub Release. Downstream consumers (e.g. alien-id/integration-tests) download
+# this prebuilt artifact instead of rebuilding the program from source.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-so:
+    runs-on: ubuntu-latest
+    container: solanafoundation/anchor:v0.32.1
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set default Rust toolchain
+        run: rustup default stable
+
+      - name: Build program
+        run: anchor build --skip-lint
+
+      - name: Attach .so to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/deploy/floor_program.so
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
