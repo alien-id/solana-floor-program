@@ -1,7 +1,7 @@
 use anchor_client::solana_sdk::pubkey::Pubkey;
 use floor_program::seeds::{
-    AAT_NFT_SEED, CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, NFT_AUTHORITY_SEED, TREASURY_SEED,
-    USDC_VAULT_SEED, WALN_VAULT_SEED,
+    AAT_NFT_SEED, CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, NFT_AUTHORITY_SEED,
+    ROUND_LOCKED_WALN_SEED, TREASURY_SEED, USDC_VAULT_SEED, WALN_VAULT_SEED,
 };
 pub(crate) fn get_contract_state_address(program_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[CONTRACT_STATE_SEED], program_id)
@@ -21,6 +21,13 @@ pub(crate) fn get_investor_pool_address(program_id: &Pubkey) -> (Pubkey, u8) {
 
 pub(crate) fn get_treasury_address(program_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[TREASURY_SEED], program_id)
+}
+
+pub(crate) fn get_round_locked_waln_address(round_index: u64, program_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[ROUND_LOCKED_WALN_SEED, &round_index.to_le_bytes()],
+        program_id,
+    )
 }
 
 pub(crate) fn get_aat_nft_mint_address(investor: &Pubkey, program_id: &Pubkey) -> (Pubkey, u8) {

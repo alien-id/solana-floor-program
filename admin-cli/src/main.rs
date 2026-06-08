@@ -1,10 +1,10 @@
 use admin_cli::handlers::{
-    handle_accept_authority, handle_cancel_round, handle_fund_treasury, handle_info,
-    handle_initialize, handle_mint_aat_nft, handle_remove_investor_from_pool,
-    handle_set_floor_price, handle_set_frozen, handle_set_investor_usdc_unlock,
-    handle_set_lock_period, handle_set_round_size, handle_set_sell_paused,
-    handle_set_usdc_withdraw_lock, handle_transfer_authority, handle_update_aat_volume,
-    handle_withdraw_treasury,
+    handle_accept_authority, handle_cancel_round, handle_finalize_claim_for_all,
+    handle_fund_treasury, handle_info, handle_initialize, handle_mint_aat_nft,
+    handle_remove_investor_from_pool, handle_set_floor_price, handle_set_frozen,
+    handle_set_investor_usdc_unlock, handle_set_lock_period, handle_set_round_size,
+    handle_set_sell_paused, handle_set_usdc_withdraw_lock, handle_transfer_authority,
+    handle_update_aat_volume, handle_withdraw_treasury,
 };
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
 use anchor_client::solana_sdk::pubkey::Pubkey;
@@ -100,6 +100,15 @@ enum Commands {
         new_admin: String,
     },
     AcceptAuthority,
+    /// Admin-settle every unclaimed wALN allocation in a locked round, in batches,
+    /// closing the round account (rent → treasury) once the last one is settled.
+    FinalizeClaimForAll {
+        /// The locked round to finalize (RoundLockedWaln `round_index`).
+        round_index: u64,
+        /// Investors settled per transaction (default 8; raise only with an ALT).
+        #[arg(long)]
+        batch_size: Option<usize>,
+    },
 }
 
 fn get_program_client(
@@ -243,6 +252,10 @@ fn main() -> Result<()> {
             handle_transfer_authority(&program, new_admin)?
         }
         Commands::AcceptAuthority => handle_accept_authority(&program)?,
+        Commands::FinalizeClaimForAll {
+            round_index,
+            batch_size,
+        } => handle_finalize_claim_for_all(&program, round_index, batch_size)?,
     }
 
     Ok(())

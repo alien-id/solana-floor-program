@@ -415,6 +415,45 @@ export class FloorSdk {
       .instruction();
   }
 
+  async finalizeClaimForAllIx(args: {
+    admin: PublicKey;
+    walnMint: PublicKey;
+    roundIndex: BN;
+    investors: { wallet: PublicKey; ata: PublicKey }[];
+    walnTokenProgram?: PublicKey;
+  }): Promise<TransactionInstruction> {
+    const [contractState] = this.contractStatePda();
+    const [walnVault] = this.walnVaultPda();
+    const [roundLockedWaln] = this.roundLockedWalnPda(args.roundIndex);
+    const [treasury] = this.treasuryPda();
+    const { accounts: hookAccounts } = await buildHookAccountsWithBumps(
+      this.program.provider.connection,
+      contractState,
+      args.walnMint
+    );
+
+    const investorAccounts = args.investors.flatMap((inv) => [
+      { pubkey: inv.wallet, isSigner: false, isWritable: false },
+      { pubkey: inv.ata, isSigner: false, isWritable: true },
+    ]);
+
+    return this.program.methods
+      .finalizeClaimForAll(args.roundIndex)
+      .accounts({
+        admin: args.admin,
+        contractState,
+        roundLockedWaln,
+        treasury,
+        walnMint: args.walnMint,
+        walnVault,
+        walnTokenProgram: args.walnTokenProgram ?? TOKEN_2022_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      } as any)
+      .remainingAccounts([...hookAccounts, ...investorAccounts])
+      .instruction();
+  }
+
   async fetchInvestorAlloc(
     roundIndex: BN,
     investor: PublicKey

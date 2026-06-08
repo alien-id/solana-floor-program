@@ -110,6 +110,13 @@ pub mod floor_program {
         claim_waln::handler(ctx, round_index)
     }
 
+    pub fn finalize_claim_for_all<'info>(
+        ctx: Context<'_, '_, 'info, 'info, FinalizeClaimForAll<'info>>,
+        round_index: u64,
+    ) -> Result<()> {
+        finalize_claim_for_all::handler(ctx, round_index)
+    }
+
     pub fn mint_aat_nft(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
         mint_aat_nft::handler(ctx, aat_volume)
     }

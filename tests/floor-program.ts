@@ -1,20 +1,25 @@
 import * as anchor from "@coral-xyz/anchor";
 import {AnchorProvider, BN} from "@coral-xyz/anchor";
 import {
+    AddressLookupTableProgram,
     ComputeBudgetProgram,
     LAMPORTS_PER_SOL,
     Keypair,
     PublicKey,
     SystemProgram,
     Transaction,
+    TransactionMessage,
+    VersionedTransaction,
     sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import {
+    ASSOCIATED_TOKEN_PROGRAM_ID,
     createBurnInstruction,
     createTransferInstruction,
     getAssociatedTokenAddressSync,
     TOKEN_2022_PROGRAM_ID,
 } from "@solana/spl-token";
+import {buildHookAccountsWithBumps} from "../sdk/utils";
 import {assert} from "chai";
 import {FloorSdk} from "../sdk/floor-sdk";
 import {
@@ -61,7 +66,7 @@ const INVESTOR2_USDC = new BN(5_000 * USDC_UNIT);
 const SELL_AMOUNT_PARTIAL = new BN(100 * WALN_UNIT);
 const SELL_AMOUNT_TRIGGER = new BN(100 * WALN_UNIT);
 
-const ALIEN_ID_HOOK_PROGRAM_ID = new PublicKey("9Xb7aD6B75AeRrd7aRwF4N5reJXsLXm63jXeyuhxJpGA");
+const ALIEN_ID_HOOK_PROGRAM_ID = new PublicKey("AXmwHw9zuXBv5vNc28BoPfm8MS9gR3zbR5EN9nWiLMm8");
 const SAS_PROGRAM_ID = new PublicKey("22zoJMtdu4tQc2PzL74ZUT7FrwgB1Udec8DdW4yw4BdG");
 
 const anchorToml = toml.parse(
@@ -3490,6 +3495,222 @@ describe("floor-program", () => {
             // Verify pool state via InvestorRecord entries
             const pool = await sdk.fetchInvestorPool();
             assert.ok(pool.count >= 99, "pool should hold at least 100 investors");
+        });
+
+        it("finalize_claim_for_all drains all 100 investors; ALT probes max batch", async function () {
+            this.timeout(600_000);
+
+            // The round that locked all 100 investors is roundCount - 1
+            // (a fresh round auto-started after the trigger).
+            const stateNow = await sdk.program.account.programState.fetch(contractState);
+            const roundIdx = new BN(stateNow.roundCount.toString()).subn(1);
+            const [roundLockedWaln] = sdk.roundLockedWalnPda(roundIdx);
+
+            const rlw = await sdk.program.account.roundLockedWaln.fetch(roundLockedWaln);
+            const participants = (rlw.investors as any[])
+                .filter((e) => BigInt(e.walnAmount.toString()) > 0n)
+                .map((e) => {
+                    const wallet = e.investor as PublicKey;
+                    const ata = getAssociatedTokenAddressSync(
+                        walnMint,
+                        wallet,
+                        true,
+                        TOKEN_2022_PROGRAM_ID
+                    );
+                    return {wallet, ata, amount: BigInt(e.walnAmount.toString())};
+                });
+            console.log(`    [finalize] unclaimed participants: ${participants.length}`);
+            assert.ok(participants.length >= 99, "expect ~100 unclaimed participants");
+
+            // ---------------------------------------------------------------
+            // Build an Address Lookup Table with every account a batch touches.
+            // ---------------------------------------------------------------
+            const [contractStatePda] = sdk.contractStatePda();
+            const [walnVault] = sdk.walnVaultPda();
+            const [treasury] = sdk.treasuryPda();
+            const {accounts: hookAccounts} = await buildHookAccountsWithBumps(
+                provider.connection,
+                contractStatePda,
+                walnMint
+            );
+
+            const fixedAddrs = [
+                contractStatePda,
+                roundLockedWaln,
+                treasury,
+                walnMint,
+                walnVault,
+                TOKEN_2022_PROGRAM_ID,
+                ASSOCIATED_TOKEN_PROGRAM_ID,
+                SystemProgram.programId,
+                ...hookAccounts.map((a) => a.pubkey),
+            ];
+            const perInvestorAddrs = participants.flatMap((p) => [p.wallet, p.ata]);
+            const altAddrs = [...fixedAddrs, ...perInvestorAddrs];
+
+            const recentSlot = await provider.connection.getSlot("finalized");
+            const [createAltIx, altAddress] =
+                AddressLookupTableProgram.createLookupTable({
+                    authority: admin.publicKey,
+                    payer: admin.publicKey,
+                    recentSlot,
+                });
+            await provider.sendAndConfirm(new Transaction().add(createAltIx));
+
+            for (let i = 0; i < altAddrs.length; i += 25) {
+                const chunk = altAddrs.slice(i, i + 25);
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        AddressLookupTableProgram.extendLookupTable({
+                            payer: admin.publicKey,
+                            authority: admin.publicKey,
+                            lookupTable: altAddress,
+                            addresses: chunk,
+                        })
+                    )
+                );
+            }
+
+            // ALT needs to warm up one slot before it can be used.
+            await sleep(1500);
+            const lookupTableAccount = (
+                await provider.connection.getAddressLookupTable(altAddress)
+            ).value;
+            assert.ok(lookupTableAccount, "ALT should be fetchable");
+            assert.equal(
+                lookupTableAccount!.state.addresses.length,
+                altAddrs.length,
+                "ALT should contain every batch account"
+            );
+
+            const buildBatchTx = async (
+                slice: {wallet: PublicKey; ata: PublicKey}[],
+                blockhash: string
+            ) => {
+                const ix = await sdk.finalizeClaimForAllIx({
+                    admin: admin.publicKey,
+                    walnMint,
+                    roundIndex: roundIdx,
+                    investors: slice.map((p) => ({wallet: p.wallet, ata: p.ata})),
+                    walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                });
+                const msg = new TransactionMessage({
+                    payerKey: admin.publicKey,
+                    recentBlockhash: blockhash,
+                    instructions: [
+                        ComputeBudgetProgram.setComputeUnitLimit({units: 1_400_000}),
+                        ix,
+                    ],
+                }).compileToV0Message([lookupTableAccount!]);
+                return new VersionedTransaction(msg);
+            };
+
+            // ---------------------------------------------------------------
+            // Probe: simulate increasing batch sizes against the (still fully
+            // unclaimed) state to find the max investors per transaction.
+            // ---------------------------------------------------------------
+            const {blockhash: simBlockhash} =
+                await provider.connection.getLatestBlockhash();
+
+            console.log(
+                "    [probe] batch |  msgBytes | CU consumed | result"
+            );
+            let maxBatch = 0;
+            for (let batch = 1; batch <= participants.length; batch += 1) {
+                const tx = await buildBatchTx(
+                    participants.slice(0, batch),
+                    simBlockhash
+                );
+                const msgBytes = tx.message.serialize().length;
+                const sim = await provider.connection.simulateTransaction(tx, {
+                    sigVerify: false,
+                    replaceRecentBlockhash: true,
+                });
+                const cu = sim.value.unitsConsumed ?? 0;
+                const ok = sim.value.err === null && msgBytes <= 1232;
+                console.log(
+                    `    [probe] ${String(batch).padStart(5)} | ${String(
+                        msgBytes
+                    ).padStart(8)} | ${String(cu).padStart(11)} | ${
+                        ok ? "OK" : "FAIL " + JSON.stringify(sim.value.err)
+                    }`
+                );
+                if (ok) maxBatch = batch;
+                else break;
+            }
+            assert.ok(maxBatch > 0, "at least one batch size must simulate cleanly");
+            console.log(`    [probe] MAX investors per finalize tx: ${maxBatch}`);
+
+            // ---------------------------------------------------------------
+            // Execute for real: drain every participant in batches of maxBatch.
+            // ---------------------------------------------------------------
+            const totalExpected = participants.reduce((s, p) => s + p.amount, 0n);
+            const vaultBefore = await getTokenBalance(
+                provider,
+                walnVault,
+                TOKEN_2022_PROGRAM_ID
+            );
+            const sampleIdx = [0, Math.floor(participants.length / 2), participants.length - 1];
+            const sampleBefore = new Map<number, bigint>();
+            for (const i of sampleIdx) {
+                let bal = 0n;
+                try {
+                    bal = await getTokenBalance(provider, participants[i].ata, TOKEN_2022_PROGRAM_ID);
+                } catch {
+                    bal = 0n;
+                }
+                sampleBefore.set(i, bal);
+            }
+
+            let txCount = 0;
+            for (let i = 0; i < participants.length; i += maxBatch) {
+                const slice = participants.slice(i, i + maxBatch);
+                const {blockhash} = await provider.connection.getLatestBlockhash();
+                const tx = await buildBatchTx(slice, blockhash);
+                tx.sign([admin]);
+                const sig = await provider.connection.sendTransaction(tx, {
+                    skipPreflight: false,
+                });
+                await provider.connection.confirmTransaction(sig, "confirmed");
+                txCount += 1;
+            }
+            console.log(
+                `    [finalize] drained ${participants.length} investors in ${txCount} tx(s) of up to ${maxBatch}`
+            );
+
+            // ---------------------------------------------------------------
+            // Assertions: balances credited, vault drained, PDA closed.
+            // ---------------------------------------------------------------
+            for (const i of sampleIdx) {
+                const after = await getTokenBalance(
+                    provider,
+                    participants[i].ata,
+                    TOKEN_2022_PROGRAM_ID
+                );
+                assert.equal(
+                    after - sampleBefore.get(i)!,
+                    participants[i].amount,
+                    `participant[${i}] should receive their full wALN allocation`
+                );
+            }
+
+            const vaultAfter = await getTokenBalance(
+                provider,
+                walnVault,
+                TOKEN_2022_PROGRAM_ID
+            );
+            assert.equal(
+                vaultBefore - vaultAfter,
+                totalExpected,
+                "vault should be debited by the sum of all allocations"
+            );
+
+            const closed = await provider.connection.getAccountInfo(roundLockedWaln);
+            assert.equal(
+                closed,
+                null,
+                "RoundLockedWaln PDA must be closed once remaining_to_claim hits 0"
+            );
         });
     });
 });

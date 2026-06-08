@@ -32,6 +32,7 @@ dependencies = [
  "floor-program",
  "shellexpand",
  "solana-rpc-client",
+ "spl-token-2022",
 ]
 
 [[package]]
