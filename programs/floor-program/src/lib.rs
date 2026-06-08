@@ -21,7 +21,7 @@ pub mod utils;
 
 use instructions::*;
 
-declare_id!("3tBjDJHPCMmKjxRAxTHiaUmZ9Li1D8YvWCS48pBMjRSe");
+declare_id!("EWcGbhLxs1tNneWu1G97ze8GFiVCovquyZbnDN1FG69t");
 
 #[program]
 pub mod floor_program {
