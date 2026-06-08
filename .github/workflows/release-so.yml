@@ -25,8 +25,13 @@ jobs:
         run: anchor build --skip-lint
 
       - name: Attach .so to the release
+        # The built program plus the vendored dependency .so (binaries/), so
+        # downstream consumers get every program the validator must load from one
+        # release — no source checkout needed.
         uses: softprops/action-gh-release@v2
         with:
-          files: target/deploy/floor_program.so
+          files: |
+            target/deploy/floor_program.so
+            binaries/*.so
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
