@@ -117,3 +117,12 @@ pub struct RoundClosed {
     pub participant_count: u32,
     pub unlock: i64,
 }
+
+/// Emitted once per investor whose locked wALN allocation is settled, by either the
+/// investor's own `claim_waln` or the admin's `finalize_claim_for_all`.
+#[event]
+pub struct WalnClaimed {
+    pub round_index: u64,
+    pub investor: Pubkey,
+    pub waln_amount: u64,
+}

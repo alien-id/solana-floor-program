@@ -1,6 +1,6 @@
 use crate::errors::FloorError;
 use crate::seeds::{CONTRACT_STATE_SEED, ROUND_LOCKED_WALN_SEED, TREASURY_SEED, WALN_VAULT_SEED};
-use crate::state::{ProgramState, RoundLockedWaln};
+use crate::state::{ProgramState, RoundLockedWaln, WalnClaimed};
 use crate::utils::{get_hook_program_id, validate_hook_accounts};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::invoke_signed;
@@ -76,7 +76,7 @@ pub struct FinalizeClaimForAll<'info> {
 ///     [+1] investor wALN associated token account (writable)
 pub fn handler<'info>(
     ctx: Context<'_, '_, 'info, 'info, FinalizeClaimForAll<'info>>,
-    _round_index: u64,
+    round_index: u64,
 ) -> Result<()> {
     let state_bump;
     let waln_mint_key;
@@ -196,6 +196,12 @@ pub fn handler<'info>(
         }
 
         invoke_signed(&ix, &account_infos, signer)?;
+
+        emit!(WalnClaimed {
+            round_index,
+            investor: investor_key,
+            waln_amount,
+        });
     }
 
     if ctx.accounts.round_locked_waln.remaining_to_claim == 0 {
