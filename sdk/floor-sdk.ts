@@ -317,6 +317,7 @@ export class FloorSdk {
    * investor_pool is always passed as a named account (not remaining accounts).
    */
   async sellWalnIx(args: {
+    caller: PublicKey;
     seller: PublicKey;
     sellerWalnAccount: PublicKey;
     sellerUsdcAccount: PublicKey;
@@ -345,6 +346,7 @@ export class FloorSdk {
     return this.program.methods
       .sellWaln(args.maxWalnAmount)
       .accounts({
+        caller: args.caller,
         seller: args.seller,
         contractState,
         investorPool,

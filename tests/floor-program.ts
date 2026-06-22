@@ -1937,6 +1937,7 @@ describe("floor-program", () => {
             const partialSig = await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -1992,7 +1993,8 @@ describe("floor-program", () => {
                 await provider.sendAndConfirm(
                     new Transaction().add(
                         await sdk.sellWalnIx({
-                            seller: seller.publicKey,
+                            caller: provider.wallet.publicKey,
+                        seller: seller.publicKey,
                             sellerWalnAccount: sellerWalnAcc,
                             sellerUsdcAccount: sellerUsdcAcc,
                             walnMint,
@@ -2028,6 +2030,7 @@ describe("floor-program", () => {
             const triggerSig = await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2126,7 +2129,8 @@ describe("floor-program", () => {
                 await provider.sendAndConfirm(
                     new Transaction().add(
                         await sdk.sellWalnIx({
-                            seller: seller.publicKey,
+                            caller: provider.wallet.publicKey,
+                        seller: seller.publicKey,
                             sellerWalnAccount: sellerWalnAcc,
                             sellerUsdcAccount: sellerUsdcAcc,
                             walnMint,
@@ -2156,7 +2160,8 @@ describe("floor-program", () => {
                 await provider.sendAndConfirm(
                     new Transaction().add(
                         await sdk.sellWalnIx({
-                            seller: seller.publicKey,
+                            caller: provider.wallet.publicKey,
+                        seller: seller.publicKey,
                             sellerWalnAccount: sellerWalnAcc,
                             sellerUsdcAccount: sellerUsdcAcc,
                             walnMint,
@@ -2177,6 +2182,62 @@ describe("floor-program", () => {
                 after.currentRoundWaln.isZero(),
                 "current_round_waln must still be 0"
             );
+        });
+    });
+
+    // ---------------------------------------------------------------------------
+    // 6c. sell_waln — caller ≠ seller (fee payer decoupled from token owner)
+    // ---------------------------------------------------------------------------
+    describe("sell_waln caller != seller", () => {
+        it("succeeds when an external caller pays fees and seller signs for tokens", async () => {
+            const externalCaller = Keypair.generate();
+
+            const { blockhash, lastValidBlockHeight } =
+                await provider.connection.getLatestBlockhash();
+            const airdropSig = await provider.connection.requestAirdrop(
+                externalCaller.publicKey,
+                1_000_000_000
+            );
+            await provider.connection.confirmTransaction(
+                { signature: airdropSig, blockhash, lastValidBlockHeight },
+                "confirmed"
+            );
+
+            await mintTokensTo(
+                provider,
+                walnMint,
+                sellerWalnAcc,
+                BigInt(MIN_SELL_WALN.toNumber()),
+                TOKEN_2022_PROGRAM_ID
+            );
+
+            const sellerUsdcBefore = await getTokenBalance(provider, sellerUsdcAcc);
+            const sellerWalnBefore = await getTokenBalance(provider, sellerWalnAcc, TOKEN_2022_PROGRAM_ID);
+            const callerLamportsBefore = await provider.connection.getBalance(externalCaller.publicKey);
+
+            await provider.sendAndConfirm(
+                new Transaction().add(
+                    await sdk.sellWalnIx({
+                        caller: externalCaller.publicKey,
+                        seller: seller.publicKey,
+                        sellerWalnAccount: sellerWalnAcc,
+                        sellerUsdcAccount: sellerUsdcAcc,
+                        walnMint,
+                        usdcMint,
+                        walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                        maxWalnAmount: MIN_SELL_WALN,
+                    })
+                ),
+                [externalCaller, seller]
+            );
+
+            const sellerUsdcAfter = await getTokenBalance(provider, sellerUsdcAcc);
+            const sellerWalnAfter = await getTokenBalance(provider, sellerWalnAcc, TOKEN_2022_PROGRAM_ID);
+            const callerLamportsAfter = await provider.connection.getBalance(externalCaller.publicKey);
+
+            assert.ok(sellerWalnAfter < sellerWalnBefore, "seller WALN should have decreased");
+            assert.ok(sellerUsdcAfter > sellerUsdcBefore, "seller USDC should have increased");
+            assert.ok(callerLamportsAfter < callerLamportsBefore, "external caller should have paid tx fee");
         });
     });
 
@@ -2414,6 +2475,7 @@ describe("floor-program", () => {
             await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2440,6 +2502,7 @@ describe("floor-program", () => {
             await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2462,6 +2525,7 @@ describe("floor-program", () => {
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2541,6 +2605,7 @@ describe("floor-program", () => {
             await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2572,6 +2637,7 @@ describe("floor-program", () => {
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2666,6 +2732,7 @@ describe("floor-program", () => {
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2753,7 +2820,8 @@ describe("floor-program", () => {
                         new Transaction().add(
                             ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                             await sdk.sellWalnIx({
-                                seller: seller.publicKey,
+                                caller: provider.wallet.publicKey,
+                        seller: seller.publicKey,
                                 sellerWalnAccount: sellerWalnAcc,
                                 sellerUsdcAccount: sellerUsdcAcc,
                                 walnMint,
@@ -2784,6 +2852,7 @@ describe("floor-program", () => {
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2825,6 +2894,7 @@ describe("floor-program", () => {
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2880,6 +2950,7 @@ describe("floor-program", () => {
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -3116,6 +3187,7 @@ describe("floor-program", () => {
             await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -3264,6 +3336,7 @@ describe("floor-program", () => {
             await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -3401,6 +3474,7 @@ describe("floor-program", () => {
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -3430,6 +3504,7 @@ describe("floor-program", () => {
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 500_000}),
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,

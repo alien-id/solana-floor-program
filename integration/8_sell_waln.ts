@@ -54,6 +54,7 @@ async function main() {
   const [roundLockedWaln] = sdk.roundLockedWalnPda(currentRoundIndex);
 
   const ix = await sdk.sellWalnIx({
+    caller: payer.publicKey,
     seller: payer.publicKey,
     sellerWalnAccount: sellerWalnAccount.address,
     sellerUsdcAccount: sellerUsdcAccount.address,

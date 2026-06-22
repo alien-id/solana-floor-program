@@ -25,6 +25,8 @@ use crate::utils::{get_hook_program_id, validate_hook_accounts};
 #[derive(Accounts)]
 pub struct SellWaln<'info> {
     #[account(mut)]
+    pub caller: Signer<'info>,
+
     pub seller: Signer<'info>,
 
     #[account(
