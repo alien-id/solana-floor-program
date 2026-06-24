@@ -32,7 +32,6 @@ upgradeable = true
 
 [test.validator]
 bind_address = "127.0.0.1"
-deactivate_feature = ["CxeBn9PVeeXbmjbNwLv6U4C6svNxnC4JX6mfkvgeMocM"]
 
 [[test.genesis]]
 address = "AXmwHw9zuXBv5vNc28BoPfm8MS9gR3zbR5EN9nWiLMm8"

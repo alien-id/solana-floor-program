@@ -2393,8 +2393,13 @@ describe("floor-program", () => {
             const vaultBalance = await getTokenBalance(provider, usdcVault);
             assert.equal(vaultBalance, BigInt(9_980 * USDC_UNIT - 100_000));
 
-            // The sum of investor positions (deposited + locked) may exceed the vault
-            // balance by up to 1 USDC
+            // During an active round, usdc_locked_current_round reflects what investors
+            // committed before any sells happened. As sells occur mid-round, the vault
+            // decreases (paying sellers) but investor records are only updated at round
+            // close. The correct invariant is:
+            //   sumPositions - currentRoundUsdcSpent ≈ vaultBalance  (± tiny rounding dust)
+            const state = await sdk.program.account.programState.fetch(contractState);
+            const currentRoundSpent = BigInt(state.currentRoundUsdcSpent.toNumber());
             const entry1 = await sdk.fetchInvestorRecord(investor1.publicKey);
             const entry2 = await sdk.fetchInvestorRecord(investor2.publicKey);
             const sumPositions = BigInt(
@@ -2403,7 +2408,7 @@ describe("floor-program", () => {
                 entry2!.usdcDeposited.toNumber() +
                 entry2!.usdcLockedCurrentRound.toNumber()
             );
-            const dustDiff = sumPositions - vaultBalance;
+            const dustDiff = sumPositions - currentRoundSpent - vaultBalance;
             assert.ok(
                 dustDiff >= 0n && dustDiff <= 5n,
                 `rounding dust should be tiny, got ${dustDiff}`
