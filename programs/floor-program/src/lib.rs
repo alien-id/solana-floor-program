@@ -5,7 +5,7 @@ use solana_security_txt::security_txt;
 
 #[cfg(not(feature = "no-entrypoint"))]
 security_txt! {
-    name: "ALN Floor Contract",
+    name: "WALN Floor Contract",
     project_url: "https://alien.org/",
     contacts: "email:aliensol@eti.gg, twitter:@alienorg",
     policy: "https://alien.org/sol-security-policy",
@@ -21,7 +21,7 @@ pub mod utils;
 
 use instructions::*;
 
-declare_id!("EWcGbhLxs1tNneWu1G97ze8GFiVCovquyZbnDN1FG69t");
+declare_id!("ALNoo9J8FCH2zPNMjktVu3B3jQEnvobc7RwkXnqyJrkZ");
 
 #[program]
 pub mod floor_program {

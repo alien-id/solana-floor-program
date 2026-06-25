@@ -6,12 +6,12 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-floor_program = "EWcGbhLxs1tNneWu1G97ze8GFiVCovquyZbnDN1FG69t"
+floor_program = "ALNoo9J8FCH2zPNMjktVu3B3jQEnvobc7RwkXnqyJrkZ"
 credential_signer = "GKn6Gu6ZVD4M5s1csUZS2gdUCoWJyy5PcFRtbvNXKV2"
 session_registry = "5pHXF7jCcRDS4672BwpVJyeuYToiGpEnuJBRxLmKemA"
 
 [programs.devnet]
-floor_program = "EWcGbhLxs1tNneWu1G97ze8GFiVCovquyZbnDN1FG69t"
+floor_program = "ALNoo9J8FCH2zPNMjktVu3B3jQEnvobc7RwkXnqyJrkZ"
 credential_signer = "GKn6Gu6ZVD4M5s1csUZS2gdUCoWJyy5PcFRtbvNXKV2"
 session_registry = "5pHXF7jCcRDS4672BwpVJyeuYToiGpEnuJBRxLmKemA"
 
@@ -19,7 +19,7 @@ session_registry = "5pHXF7jCcRDS4672BwpVJyeuYToiGpEnuJBRxLmKemA"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [settings]
