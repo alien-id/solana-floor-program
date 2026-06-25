@@ -6,12 +6,12 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-floor_program = "3tBjDJHPCMmKjxRAxTHiaUmZ9Li1D8YvWCS48pBMjRSe"
+floor_program = "ALNoo9J8FCH2zPNMjktVu3B3jQEnvobc7RwkXnqyJrkZ"
 credential_signer = "GKn6Gu6ZVD4M5s1csUZS2gdUCoWJyy5PcFRtbvNXKV2"
 session_registry = "5pHXF7jCcRDS4672BwpVJyeuYToiGpEnuJBRxLmKemA"
 
 [programs.devnet]
-floor_program = "3tBjDJHPCMmKjxRAxTHiaUmZ9Li1D8YvWCS48pBMjRSe"
+floor_program = "ALNoo9J8FCH2zPNMjktVu3B3jQEnvobc7RwkXnqyJrkZ"
 credential_signer = "GKn6Gu6ZVD4M5s1csUZS2gdUCoWJyy5PcFRtbvNXKV2"
 session_registry = "5pHXF7jCcRDS4672BwpVJyeuYToiGpEnuJBRxLmKemA"
 
@@ -32,7 +32,6 @@ upgradeable = true
 
 [test.validator]
 bind_address = "127.0.0.1"
-deactivate_feature = ["CxeBn9PVeeXbmjbNwLv6U4C6svNxnC4JX6mfkvgeMocM"]
 
 [[test.genesis]]
 address = "AXmwHw9zuXBv5vNc28BoPfm8MS9gR3zbR5EN9nWiLMm8"

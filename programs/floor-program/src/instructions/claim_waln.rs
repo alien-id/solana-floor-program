@@ -1,12 +1,12 @@
+use crate::errors::FloorError;
+use crate::seeds::{CONTRACT_STATE_SEED, ROUND_LOCKED_WALN_SEED, TREASURY_SEED, WALN_VAULT_SEED};
+use crate::state::{ProgramState, RoundLockedWaln, WalnClaimed};
+use crate::utils::{close_to_treasury, get_hook_program_id, validate_hook_accounts};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::invoke_signed;
 use anchor_spl::associated_token::AssociatedToken;
-use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 use anchor_spl::token_2022::spl_token_2022::instruction::transfer_checked as build_transfer_checked_ix;
-use crate::errors::FloorError;
-use crate::seeds::{CONTRACT_STATE_SEED, ROUND_LOCKED_WALN_SEED, TREASURY_SEED, WALN_VAULT_SEED};
-use crate::state::{ProgramState, RoundLockedWaln};
-use crate::utils::{get_hook_program_id, validate_hook_accounts};
+use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
 #[derive(Accounts)]
 #[instruction(round_index: u64)]
@@ -62,7 +62,10 @@ pub struct ClaimWaln<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _round_index: u64) -> Result<()> {
+pub fn handler<'info>(
+    ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>,
+    round_index: u64,
+) -> Result<()> {
     let state_bump;
     let waln_mint_key;
     {
@@ -71,7 +74,10 @@ pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _rou
         state_bump = state.bump;
         waln_mint_key = state.waln_mint;
     }
-    require!(ctx.accounts.waln_mint.key() == waln_mint_key, FloorError::InvalidMint);
+    require!(
+        ctx.accounts.waln_mint.key() == waln_mint_key,
+        FloorError::InvalidMint
+    );
 
     let investor_key = ctx.accounts.investor.key();
 
@@ -148,17 +154,18 @@ pub fn handler<'info>(ctx: Context<'_, '_, 'info, 'info, ClaimWaln<'info>>, _rou
 
     invoke_signed(&ix, &account_infos, signer)?;
 
-    if should_close {
-        let rlw_info = ctx.accounts.round_locked_waln.to_account_info();
-        let treasury_info = ctx.accounts.treasury.to_account_info();
+    emit!(WalnClaimed {
+        round_index,
+        investor: investor_key,
+        waln_amount,
+    });
 
-        let dest_starting = treasury_info.lamports();
-        **treasury_info.try_borrow_mut_lamports()? = dest_starting
-            .checked_add(rlw_info.lamports())
-            .ok_or(FloorError::ArithmeticOverflow)?;
-        **rlw_info.try_borrow_mut_lamports()? = 0;
-        rlw_info.assign(&System::id());
-        rlw_info.resize(0)?;
+    if should_close {
+        // The round is fully settled — reclaim the locked-wALN account's rent.
+        close_to_treasury(
+            &ctx.accounts.round_locked_waln.to_account_info(),
+            &ctx.accounts.treasury.to_account_info(),
+        )?;
     }
 
     Ok(())

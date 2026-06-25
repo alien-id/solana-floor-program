@@ -1,7 +1,7 @@
 use crate::errors::FloorError;
 use crate::instructions::start_round::require_viable_round_params;
 use crate::seeds::{CONTRACT_STATE_SEED, INVESTOR_POOL_SEED, TREASURY_SEED, USDC_VAULT_SEED};
-use crate::state::{InvestorPool, InvestorRecord, ProgramState};
+use crate::state::{InvestorPool, ProgramState};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     program::{invoke, invoke_signed},
@@ -74,7 +74,7 @@ pub struct SetInvestorUsdcUnlock<'info> {
         seeds = [INVESTOR_POOL_SEED],
         bump,
     )]
-    pub investor_pool: AccountLoader<'info, InvestorPool>,
+    pub investor_pool: Account<'info, InvestorPool>,
 }
 
 pub fn set_investor_usdc_unlock(
@@ -82,9 +82,10 @@ pub fn set_investor_usdc_unlock(
     investor: Pubkey,
     new_unlock_ts: i64,
 ) -> Result<()> {
-    let mut pool = ctx.accounts.investor_pool.load_mut()?;
-    let count = pool.count as usize;
-    let record = pool.investors[..count]
+    let record = ctx
+        .accounts
+        .investor_pool
+        .investors
         .iter_mut()
         .find(|r| r.investor == investor)
         .ok_or(FloorError::InvalidInvestor)?;
@@ -167,7 +168,7 @@ pub struct CancelRound<'info> {
         seeds = [INVESTOR_POOL_SEED],
         bump,
     )]
-    pub investor_pool: AccountLoader<'info, InvestorPool>,
+    pub investor_pool: Account<'info, InvestorPool>,
 }
 
 pub fn cancel_round(ctx: Context<CancelRound>) -> Result<()> {
@@ -181,9 +182,7 @@ pub fn cancel_round(ctx: Context<CancelRound>) -> Result<()> {
         state.total_usdc_locked_for_round = 0;
     }
 
-    let mut pool = ctx.accounts.investor_pool.load_mut()?;
-    let count = pool.count as usize;
-    for record in pool.investors[..count].iter_mut() {
+    for record in ctx.accounts.investor_pool.investors.iter_mut() {
         if record.usdc_locked_current_round == 0 {
             continue;
         }
@@ -199,6 +198,7 @@ pub fn cancel_round(ctx: Context<CancelRound>) -> Result<()> {
 
 #[derive(Accounts)]
 pub struct RemoveInvestorFromPool<'info> {
+    #[account(mut)]
     pub admin: Signer<'info>,
 
     #[account(
@@ -214,7 +214,7 @@ pub struct RemoveInvestorFromPool<'info> {
         seeds = [INVESTOR_POOL_SEED],
         bump,
     )]
-    pub investor_pool: AccountLoader<'info, InvestorPool>,
+    pub investor_pool: Account<'info, InvestorPool>,
 
     /// CHECK: investor wallet whose pool slot is being reclaimed; used only as a key
     /// and to authorize the refund destination token account.
@@ -260,13 +260,14 @@ pub fn remove_investor_from_pool(ctx: Context<RemoveInvestorFromPool>) -> Result
 
     let refund;
     {
-        let pool = ctx.accounts.investor_pool.load()?;
-        let count = pool.count as usize;
-        let idx = pool.investors[..count]
+        let idx = ctx
+            .accounts
+            .investor_pool
+            .investors
             .iter()
             .position(|r| r.investor == investor)
             .ok_or(FloorError::InvalidInvestor)?;
-        let record = &pool.investors[idx];
+        let record = &ctx.accounts.investor_pool.investors[idx];
         require!(
             record.aat_volume == 0 && record.usdc_locked_current_round == 0,
             FloorError::InvestorNotInactive
@@ -274,8 +275,6 @@ pub fn remove_investor_from_pool(ctx: Context<RemoveInvestorFromPool>) -> Result
         refund = record.usdc_deposited;
     }
 
-    // The withdraw-lock is intentionally bypassed: this is a privileged admin teardown
-    // that returns the funds to their rightful owner.
     if refund > 0 {
         let seeds: &[&[u8]] = &[CONTRACT_STATE_SEED, &[state_bump]];
         let signer = &[seeds];
@@ -301,27 +300,33 @@ pub fn remove_investor_from_pool(ctx: Context<RemoveInvestorFromPool>) -> Result
             .ok_or(FloorError::ArithmeticOverflow)?;
     }
 
-    {
-        let mut pool = ctx.accounts.investor_pool.load_mut()?;
-        let count = pool.count as usize;
-        let idx = pool.investors[..count]
-            .iter()
-            .position(|r| r.investor == investor)
-            .ok_or(FloorError::InvalidInvestor)?;
-        let last = count - 1;
-        let moved = pool.investors[last];
-        pool.investors[idx] = moved;
-        pool.investors[last] = InvestorRecord {
-            investor: Pubkey::default(),
-            usdc_deposited: 0,
-            usdc_locked_current_round: 0,
-            usdc_committed: 0,
-            waln_purchased_total: 0,
-            aat_volume: 0,
-            usdc_unlock_ts: 0,
-        };
-        pool.count -= 1;
+    let idx = ctx
+        .accounts
+        .investor_pool
+        .investors
+        .iter()
+        .position(|r| r.investor == investor)
+        .ok_or(FloorError::InvalidInvestor)?;
+    ctx.accounts.investor_pool.investors.swap_remove(idx);
+
+    let new_size = InvestorPool::space(ctx.accounts.investor_pool.investors.len());
+    let new_rent = Rent::get()?.minimum_balance(new_size);
+    let pool_info = ctx.accounts.investor_pool.to_account_info();
+    let current_lamports = pool_info.lamports();
+    if current_lamports > new_rent {
+        let excess = current_lamports
+            .checked_sub(new_rent)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+        **pool_info.try_borrow_mut_lamports()? = current_lamports
+            .checked_sub(excess)
+            .ok_or(FloorError::ArithmeticOverflow)?;
+        let admin_info = ctx.accounts.admin.to_account_info();
+        **admin_info.try_borrow_mut_lamports()? = admin_info
+            .lamports()
+            .checked_add(excess)
+            .ok_or(FloorError::ArithmeticOverflow)?;
     }
+    pool_info.resize(new_size)?;
 
     Ok(())
 }

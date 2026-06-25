@@ -1,19 +1,25 @@
 import * as anchor from "@coral-xyz/anchor";
 import {AnchorProvider, BN} from "@coral-xyz/anchor";
 import {
+    AddressLookupTableProgram,
     ComputeBudgetProgram,
+    LAMPORTS_PER_SOL,
     Keypair,
     PublicKey,
     SystemProgram,
     Transaction,
+    TransactionMessage,
+    VersionedTransaction,
     sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import {
+    ASSOCIATED_TOKEN_PROGRAM_ID,
     createBurnInstruction,
     createTransferInstruction,
     getAssociatedTokenAddressSync,
     TOKEN_2022_PROGRAM_ID,
 } from "@solana/spl-token";
+import {buildHookAccountsWithBumps} from "../sdk/utils";
 import {assert} from "chai";
 import {FloorSdk} from "../sdk/floor-sdk";
 import {
@@ -141,6 +147,49 @@ describe("floor-program", () => {
     // ---------------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------------
+
+    async function getAccountLamports(pubkey: PublicKey): Promise<number> {
+        return (await provider.connection.getAccountInfo(pubkey))?.lamports ?? 0;
+    }
+
+    function formatSol(lamports: number): string {
+        return (lamports / LAMPORTS_PER_SOL).toFixed(9);
+    }
+
+    async function logRoundFinalizeRent(
+        label: string,
+        roundLockedWaln: PublicKey,
+        beforeRoundLockedWalnLamports: number
+    ): Promise<void> {
+        const afterRoundLockedWalnLamports = await getAccountLamports(roundLockedWaln);
+        const roundLockedWalnRent = Math.max(afterRoundLockedWalnLamports - beforeRoundLockedWalnLamports, 0);
+        const totalRent = roundLockedWalnRent;
+
+        console.log(`    [RENT] ${label}: ${totalRent} lamports (${formatSol(totalRent)} SOL)`);
+        console.log(`    [RENT]   RoundLockedWaln: ${roundLockedWalnRent} lamports (${formatSol(roundLockedWalnRent)} SOL), refundable: yes to treasury after final claim`);
+    }
+
+    // Round summaries (waln_purchased, usdc_spent, total_aat_volume_at_trigger,
+    // participant_count) now live in the RoundClosed event rather than an on-chain
+    // RoundRecord account. Decode it from the round-trigger transaction's logs.
+    async function getRoundClosedEvent(signature: string): Promise<any> {
+        await sleep(1000);
+        const tx = await provider.connection.getTransaction(signature, {
+            commitment: "confirmed",
+            maxSupportedTransactionVersion: 0,
+        });
+        const logs = tx?.meta?.logMessages ?? [];
+        const parser = new anchor.EventParser(
+            sdk.program.programId,
+            sdk.program.coder
+        );
+        for (const event of parser.parseLogs(logs)) {
+            if (event.name === "roundClosed" || event.name === "RoundClosed") {
+                return event.data;
+            }
+        }
+        throw new Error(`RoundClosed event not found in tx ${signature}`);
+    }
 
     async function getOracleSignature(
         session: { address: string; privateKey: string },
@@ -1888,6 +1937,7 @@ describe("floor-program", () => {
             const partialSig = await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -1943,7 +1993,8 @@ describe("floor-program", () => {
                 await provider.sendAndConfirm(
                     new Transaction().add(
                         await sdk.sellWalnIx({
-                            seller: seller.publicKey,
+                            caller: provider.wallet.publicKey,
+                        seller: seller.publicKey,
                             sellerWalnAccount: sellerWalnAcc,
                             sellerUsdcAccount: sellerUsdcAcc,
                             walnMint,
@@ -1971,14 +2022,15 @@ describe("floor-program", () => {
     describe("sell_waln round trigger", () => {
         it("triggers round end + round start when threshold is hit", async () => {
             const round0 = new BN(0);
-            const [roundRecord0] = sdk.roundRecordPda(round0);
             const [roundLockedWaln0] = sdk.roundLockedWalnPda(round0);
 
             const sellerUsdcBefore = await getTokenBalance(provider, sellerUsdcAcc);
+            const beforeRoundLockedWalnLamports = await getAccountLamports(roundLockedWaln0);
 
             const triggerSig = await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -1987,7 +2039,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: SELL_AMOUNT_TRIGGER,
                         roundTriggerAccounts: [
-                            {pubkey: roundRecord0, isWritable: true},
                             {pubkey: roundLockedWaln0, isWritable: true},
                         ],
                     })
@@ -2001,8 +2052,11 @@ describe("floor-program", () => {
                 maxSupportedTransactionVersion: 0
             });
             console.log(`    [CU] sell_waln TRIGGER (round-end + round-start, 2 investors): ${triggerTx?.meta?.computeUnitsConsumed}`);
-            const roundLockedWaln0Lamports = await provider.connection.getBalance(roundLockedWaln0);
-            console.log(`    [LAMPORTS] RoundLockedWaln account: ${roundLockedWaln0Lamports} lamports`);
+            await logRoundFinalizeRent(
+                "sell_waln round finalization",
+                roundLockedWaln0,
+                beforeRoundLockedWalnLamports
+            );
 
             const sellerUsdcAfter = await getTokenBalance(provider, sellerUsdcAcc);
             assert.equal(
@@ -2010,13 +2064,13 @@ describe("floor-program", () => {
                 BigInt(10 * USDC_UNIT)
             );
 
-            // ---- verify RoundRecord created ----
-            const rr = await sdk.fetchRoundRecord(round0);
-            assert.equal(rr.roundIndex, 0n);
-            assert.equal(rr.walnPurchased, 200_000_000_000n);
-            assert.equal(rr.usdcSpent, 20_000_000n);
-            assert.equal(rr.totalAatVolumeAtTrigger, 150000n);
-            assert.equal(rr.participantCount, 2);
+            // ---- verify RoundClosed event ----
+            const closed = await getRoundClosedEvent(triggerSig);
+            assert.equal(closed.roundIndex.toString(), "0");
+            assert.equal(closed.walnPurchased.toString(), "200000000000");
+            assert.equal(closed.usdcSpent.toString(), "20000000");
+            assert.equal(closed.totalAatVolumeAtTrigger.toString(), "150000");
+            assert.equal(closed.participantCount, 2);
 
             // ---- verify ContractState updated ----
             const state = await sdk.program.account.programState.fetch(contractState);
@@ -2075,7 +2129,8 @@ describe("floor-program", () => {
                 await provider.sendAndConfirm(
                     new Transaction().add(
                         await sdk.sellWalnIx({
-                            seller: seller.publicKey,
+                            caller: provider.wallet.publicKey,
+                        seller: seller.publicKey,
                             sellerWalnAccount: sellerWalnAcc,
                             sellerUsdcAccount: sellerUsdcAcc,
                             walnMint,
@@ -2105,7 +2160,8 @@ describe("floor-program", () => {
                 await provider.sendAndConfirm(
                     new Transaction().add(
                         await sdk.sellWalnIx({
-                            seller: seller.publicKey,
+                            caller: provider.wallet.publicKey,
+                        seller: seller.publicKey,
                             sellerWalnAccount: sellerWalnAcc,
                             sellerUsdcAccount: sellerUsdcAcc,
                             walnMint,
@@ -2126,6 +2182,65 @@ describe("floor-program", () => {
                 after.currentRoundWaln.isZero(),
                 "current_round_waln must still be 0"
             );
+        });
+    });
+
+    // ---------------------------------------------------------------------------
+    // 6c. sell_waln — caller ≠ seller (fee payer decoupled from token owner)
+    // ---------------------------------------------------------------------------
+    describe("sell_waln caller != seller", () => {
+        it("succeeds when an external caller pays fees and seller signs for tokens", async () => {
+            const externalCaller = Keypair.generate();
+
+            const { blockhash, lastValidBlockHeight } =
+                await provider.connection.getLatestBlockhash();
+            const airdropSig = await provider.connection.requestAirdrop(
+                externalCaller.publicKey,
+                1_000_000_000
+            );
+            await provider.connection.confirmTransaction(
+                { signature: airdropSig, blockhash, lastValidBlockHeight },
+                "confirmed"
+            );
+
+            await mintTokensTo(
+                provider,
+                walnMint,
+                sellerWalnAcc,
+                BigInt(MIN_SELL_WALN.toNumber()),
+                TOKEN_2022_PROGRAM_ID
+            );
+
+            const sellerUsdcBefore = await getTokenBalance(provider, sellerUsdcAcc);
+            const sellerWalnBefore = await getTokenBalance(provider, sellerWalnAcc, TOKEN_2022_PROGRAM_ID);
+            const callerLamportsBefore = await provider.connection.getBalance(externalCaller.publicKey);
+
+            const ix = await sdk.sellWalnIx({
+                caller: externalCaller.publicKey,
+                seller: seller.publicKey,
+                sellerWalnAccount: sellerWalnAcc,
+                sellerUsdcAccount: sellerUsdcAcc,
+                walnMint,
+                usdcMint,
+                walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                maxWalnAmount: MIN_SELL_WALN,
+            });
+            const tx = new Transaction().add(ix);
+            tx.feePayer = externalCaller.publicKey;
+            await sendAndConfirmTransaction(
+                provider.connection,
+                tx,
+                [externalCaller, seller],
+                { commitment: "confirmed" }
+            );
+
+            const sellerUsdcAfter = await getTokenBalance(provider, sellerUsdcAcc);
+            const sellerWalnAfter = await getTokenBalance(provider, sellerWalnAcc, TOKEN_2022_PROGRAM_ID);
+            const callerLamportsAfter = await provider.connection.getBalance(externalCaller.publicKey);
+
+            assert.ok(sellerWalnAfter < sellerWalnBefore, "seller WALN should have decreased");
+            assert.ok(sellerUsdcAfter > sellerUsdcBefore, "seller USDC should have increased");
+            assert.ok(callerLamportsAfter < callerLamportsBefore, "external caller should have paid tx fee");
         });
     });
 
@@ -2276,10 +2391,15 @@ describe("floor-program", () => {
     describe("vault integrity", () => {
         it("USDC vault balance reflects deposits minus seller payments", async () => {
             const vaultBalance = await getTokenBalance(provider, usdcVault);
-            assert.equal(vaultBalance, BigInt(9_980 * USDC_UNIT));
+            assert.equal(vaultBalance, BigInt(9_980 * USDC_UNIT - 100_000));
 
-            // The sum of investor positions (deposited + locked) may exceed the vault
-            // balance by up to 1 USDC
+            // During an active round, usdc_locked_current_round reflects what investors
+            // committed before any sells happened. As sells occur mid-round, the vault
+            // decreases (paying sellers) but investor records are only updated at round
+            // close. The correct invariant is:
+            //   sumPositions - currentRoundUsdcSpent ≈ vaultBalance  (± tiny rounding dust)
+            const state = await sdk.program.account.programState.fetch(contractState);
+            const currentRoundSpent = BigInt(state.currentRoundUsdcSpent.toNumber());
             const entry1 = await sdk.fetchInvestorRecord(investor1.publicKey);
             const entry2 = await sdk.fetchInvestorRecord(investor2.publicKey);
             const sumPositions = BigInt(
@@ -2288,7 +2408,7 @@ describe("floor-program", () => {
                 entry2!.usdcDeposited.toNumber() +
                 entry2!.usdcLockedCurrentRound.toNumber()
             );
-            const dustDiff = sumPositions - vaultBalance;
+            const dustDiff = sumPositions - currentRoundSpent - vaultBalance;
             assert.ok(
                 dustDiff >= 0n && dustDiff <= 5n,
                 `rounding dust should be tiny, got ${dustDiff}`
@@ -2363,6 +2483,7 @@ describe("floor-program", () => {
             await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2389,6 +2510,7 @@ describe("floor-program", () => {
             await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2403,7 +2525,6 @@ describe("floor-program", () => {
 
             const mid = await sdk.program.account.programState.fetch(contractState);
             const roundBn = new BN(mid.roundCount.toNumber());
-            const [roundRecord] = sdk.roundRecordPda(roundBn);
             const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
             const newRemaining = mid.currentRoundSizeWaln.sub(mid.currentRoundWaln);
 
@@ -2412,6 +2533,7 @@ describe("floor-program", () => {
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2420,7 +2542,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: gap,
                         roundTriggerAccounts: [
-                            {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
@@ -2492,6 +2613,7 @@ describe("floor-program", () => {
             await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2517,13 +2639,13 @@ describe("floor-program", () => {
             const stateBefore = await sdk.program.account.programState.fetch(contractState);
             const roundIndex = stateBefore.roundCount; // 3
             const roundBn = new BN(roundIndex.toNumber());
-            const [roundRecord] = sdk.roundRecordPda(roundBn);
             const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
 
             await provider.sendAndConfirm(
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2532,7 +2654,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: new BN(100 * WALN_UNIT),
                         roundTriggerAccounts: [
-                            {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
@@ -2610,7 +2731,6 @@ describe("floor-program", () => {
         it("oversized max clamps to the snapshotted round size (200), not the live 400", async () => {
             const before = await sdk.program.account.programState.fetch(contractState);
             const roundBn = new BN(before.roundCount.toNumber());
-            const [roundRecord] = sdk.roundRecordPda(roundBn);
             const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
             const snapshotRemaining = before.currentRoundSizeWaln.sub(before.currentRoundWaln);
             assert.ok(snapshotRemaining.eq(new BN(200 * WALN_UNIT)), "round is capped at the snapshotted 200");
@@ -2620,6 +2740,7 @@ describe("floor-program", () => {
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2628,7 +2749,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: new BN(400 * WALN_UNIT),
                         roundTriggerAccounts: [
-                            {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
@@ -2703,13 +2823,13 @@ describe("floor-program", () => {
                 const remaining = state.currentRoundSizeWaln.sub(state.currentRoundWaln);
                 if (remaining.gtn(0)) {
                     const roundBn = new BN(state.roundCount.toNumber());
-                    const [roundRecord] = sdk.roundRecordPda(roundBn);
                     const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
                     await provider.sendAndConfirm(
                         new Transaction().add(
                             ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                             await sdk.sellWalnIx({
-                                seller: seller.publicKey,
+                                caller: provider.wallet.publicKey,
+                        seller: seller.publicKey,
                                 sellerWalnAccount: sellerWalnAcc,
                                 sellerUsdcAccount: sellerUsdcAcc,
                                 walnMint,
@@ -2717,7 +2837,6 @@ describe("floor-program", () => {
                                 walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                                 maxWalnAmount: remaining,
                                 roundTriggerAccounts: [
-                                    {pubkey: roundRecord, isWritable: true},
                                     {pubkey: roundLockedWaln, isWritable: true},
                                 ],
                             })
@@ -2733,15 +2852,15 @@ describe("floor-program", () => {
             const oldDust = BigInt(stateBefore.walnDustCarryover.toString());
             const roundIndex = stateBefore.roundCount;
             const roundBn = new BN(roundIndex.toNumber());
-            const [roundRecord] = sdk.roundRecordPda(roundBn);
             const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
 
             const walnInRound = BigInt(stateBefore.currentRoundSizeWaln.toString());
 
-            await provider.sendAndConfirm(
+            const triggerSig = await provider.sendAndConfirm(
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2750,7 +2869,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
                         roundTriggerAccounts: [
-                            {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
@@ -2761,8 +2879,8 @@ describe("floor-program", () => {
             const stateAfter = await sdk.program.account.programState.fetch(contractState);
             const newDust = BigInt(stateAfter.walnDustCarryover.toString());
 
-            const rr = await sdk.fetchRoundRecord(roundBn);
-            const totalWalnPurchased = rr.walnPurchased;
+            const closed = await getRoundClosedEvent(triggerSig);
+            const totalWalnPurchased = BigInt(closed.walnPurchased.toString());
 
             assert.equal(
                 totalWalnPurchased + newDust,
@@ -2778,13 +2896,13 @@ describe("floor-program", () => {
 
             const roundIndex = stateBefore.roundCount;
             const roundBn = new BN(roundIndex.toNumber());
-            const [roundRecord] = sdk.roundRecordPda(roundBn);
             const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
 
-            await provider.sendAndConfirm(
+            const triggerSig = await provider.sendAndConfirm(
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2793,7 +2911,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: new BN(stateBefore.currentRoundSizeWaln.toString()),
                         roundTriggerAccounts: [
-                            {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
@@ -2802,11 +2919,12 @@ describe("floor-program", () => {
             );
 
             const stateAfter = await sdk.program.account.programState.fetch(contractState);
-            const rr = await sdk.fetchRoundRecord(roundBn);
+            const closed = await getRoundClosedEvent(triggerSig);
+            const walnPurchased = BigInt(closed.walnPurchased.toString());
             const newDust = BigInt(stateAfter.walnDustCarryover.toString());
             const walnInRound = BigInt(stateBefore.currentRoundSizeWaln.toString());
 
-            assert.equal(rr.walnPurchased, walnInRound);
+            assert.equal(walnPurchased, walnInRound);
             assert.equal(newDust, 0n);
         });
     });
@@ -2832,7 +2950,6 @@ describe("floor-program", () => {
             assert.ok(stateMid.lockPeriodSeconds.eq(NEW_LOCK));
 
             const roundBn = new BN(stateMid.roundCount.toNumber());
-            const [roundRecord] = sdk.roundRecordPda(roundBn);
             const [roundLockedWaln] = sdk.roundLockedWalnPda(roundBn);
             const remaining = stateMid.currentRoundSizeWaln.sub(stateMid.currentRoundWaln);
             const nowApprox = Math.floor(Date.now() / 1000);
@@ -2841,6 +2958,7 @@ describe("floor-program", () => {
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -2849,7 +2967,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: remaining,
                         roundTriggerAccounts: [
-                            {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
@@ -3078,6 +3195,7 @@ describe("floor-program", () => {
             await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -3124,6 +3242,8 @@ describe("floor-program", () => {
             assert.equal(stateBefore.roundStarted, 1, "round must be active before close");
 
             closedRoundIdx = new BN(stateBefore.roundCount.toString());
+            const [roundLockedWaln] = sdk.roundLockedWalnPda(closedRoundIdx);
+            const beforeRoundLockedWalnLamports = await getAccountLamports(roundLockedWaln);
             const floorPrice = BigInt(stateBefore.currentRoundFloorPrice.toString());
             const walnScale = BigInt(WALN_UNIT);
             const walnInRoundBefore = BigInt(stateBefore.currentRoundWaln.toString());
@@ -3139,11 +3259,16 @@ describe("floor-program", () => {
             const purchased2Before = BigInt(e2Before!.walnPurchasedTotal.toString());
             assert.ok(locked1 > 0n && locked2 > 0n, "both investors should have locked funds");
 
-            await provider.sendAndConfirm(
+            const closeSig = await provider.sendAndConfirm(
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.admin(admin.publicKey).closeRound()
                 )
+            );
+            await logRoundFinalizeRent(
+                "close_round forced finalization",
+                roundLockedWaln,
+                beforeRoundLockedWalnLamports
             );
 
             // --- State finalized, NO new round started. ---
@@ -3156,10 +3281,10 @@ describe("floor-program", () => {
                 "round_count must increment"
             );
 
-            // --- RoundRecord written for the closed round. ---
-            const rr = await sdk.fetchRoundRecord(closedRoundIdx);
-            const walnPurchased = BigInt(rr.walnPurchased.toString());
-            assert.ok(walnPurchased > 0n, "round record must record purchased wALN");
+            // --- RoundClosed event reports the round summary. ---
+            const closed = await getRoundClosedEvent(closeSig);
+            const walnPurchased = BigInt(closed.walnPurchased.toString());
+            assert.ok(walnPurchased > 0n, "round must record purchased wALN");
             assert.ok(
                 walnPurchased <= walnInRoundBefore,
                 "purchased cannot exceed wALN actually delivered to the round"
@@ -3219,6 +3344,7 @@ describe("floor-program", () => {
             await provider.sendAndConfirm(
                 new Transaction().add(
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -3346,7 +3472,6 @@ describe("floor-program", () => {
             //    After this trigger, round N+1 auto-starts and locks all 102 investors.
             const stateNow = await sdk.program.account.programState.fetch(contractState);
             const currentRoundIdx = new BN(stateNow.roundCount.toString());
-            const [roundRecordNow] = sdk.roundRecordPda(currentRoundIdx);
             const [roundLockedWalnNow] = sdk.roundLockedWalnPda(currentRoundIdx);
 
             const remainingToSell = new BN(
@@ -3357,6 +3482,7 @@ describe("floor-program", () => {
                 new Transaction().add(
                     ComputeBudgetProgram.setComputeUnitLimit({units: 400_000}),
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -3365,7 +3491,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: remainingToSell,
                         roundTriggerAccounts: [
-                            {pubkey: roundRecordNow, isWritable: true},
                             {pubkey: roundLockedWalnNow, isWritable: true},
                         ],
                     })
@@ -3374,20 +3499,20 @@ describe("floor-program", () => {
             );
         });
 
-        it("triggers round end with all 100 investors (99 new + 1 original)", async () => {
+        it("triggers round end with all 100 investors (98 new + 2 original)", async () => {
             const stateBefore = await sdk.program.account.programState.fetch(contractState);
             assert.equal(stateBefore.roundStarted, 1, "round should be auto-started");
 
             const roundIdx = new BN(stateBefore.roundCount.toString());
-            const [roundRecord] = sdk.roundRecordPda(roundIdx);
             const [roundLockedWaln] = sdk.roundLockedWalnPda(roundIdx);
 
             const roundSizeWaln = new BN(stateBefore.currentRoundSizeWaln.toString());
 
             const sig = await provider.sendAndConfirm(
                 new Transaction().add(
-                    ComputeBudgetProgram.setComputeUnitLimit({units: 300_000}),
+                    ComputeBudgetProgram.setComputeUnitLimit({units: 500_000}),
                     await sdk.sellWalnIx({
+                        caller: provider.wallet.publicKey,
                         seller: seller.publicKey,
                         sellerWalnAccount: sellerWalnAcc,
                         sellerUsdcAccount: sellerUsdcAcc,
@@ -3396,7 +3521,6 @@ describe("floor-program", () => {
                         walnTokenProgram: TOKEN_2022_PROGRAM_ID,
                         maxWalnAmount: roundSizeWaln,
                         roundTriggerAccounts: [
-                            {pubkey: roundRecord, isWritable: true},
                             {pubkey: roundLockedWaln, isWritable: true},
                         ],
                     })
@@ -3417,12 +3541,17 @@ describe("floor-program", () => {
             const investorPoolLamports100 = await provider.connection.getBalance(sdk.investorPoolPda()[0]);
             console.log(`    [LAMPORTS] InvestorPool account (100-investor): ${investorPoolLamports100} lamports`);
 
-            // Verify round record was created with 102 participants
-            const rr = await sdk.fetchRoundRecord(roundIdx);
+            // Verify all 100 participants are recorded. The RoundClosed event can't be
+            // used here: sell_waln emits 100 InvestorAllocated data-logs before it, so
+            // the event line is past Solana's ~10KB log-truncation limit. Read the
+            // participant count straight from the on-chain RoundLockedWaln account.
+            const rlw100 = await sdk.program.account.roundLockedWaln.fetch(
+                roundLockedWaln
+            );
             assert.equal(
-                rr.participantCount,
-                99,
-                "all 100 investors (1 original + 99 new) should participate"
+                (rlw100.investors as any[]).length,
+                100,
+                "all 100 investors (2 original + 98 new) should participate"
             );
 
             // Verify round count incremented
@@ -3445,6 +3574,222 @@ describe("floor-program", () => {
             // Verify pool state via InvestorRecord entries
             const pool = await sdk.fetchInvestorPool();
             assert.ok(pool.count >= 99, "pool should hold at least 100 investors");
+        });
+
+        it("finalize_claim_for_all drains all 100 investors; ALT probes max batch", async function () {
+            this.timeout(600_000);
+
+            // The round that locked all 100 investors is roundCount - 1
+            // (a fresh round auto-started after the trigger).
+            const stateNow = await sdk.program.account.programState.fetch(contractState);
+            const roundIdx = new BN(stateNow.roundCount.toString()).subn(1);
+            const [roundLockedWaln] = sdk.roundLockedWalnPda(roundIdx);
+
+            const rlw = await sdk.program.account.roundLockedWaln.fetch(roundLockedWaln);
+            const participants = (rlw.investors as any[])
+                .filter((e) => BigInt(e.walnAmount.toString()) > 0n)
+                .map((e) => {
+                    const wallet = e.investor as PublicKey;
+                    const ata = getAssociatedTokenAddressSync(
+                        walnMint,
+                        wallet,
+                        true,
+                        TOKEN_2022_PROGRAM_ID
+                    );
+                    return {wallet, ata, amount: BigInt(e.walnAmount.toString())};
+                });
+            console.log(`    [finalize] unclaimed participants: ${participants.length}`);
+            assert.ok(participants.length >= 99, "expect ~100 unclaimed participants");
+
+            // ---------------------------------------------------------------
+            // Build an Address Lookup Table with every account a batch touches.
+            // ---------------------------------------------------------------
+            const [contractStatePda] = sdk.contractStatePda();
+            const [walnVault] = sdk.walnVaultPda();
+            const [treasury] = sdk.treasuryPda();
+            const {accounts: hookAccounts} = await buildHookAccountsWithBumps(
+                provider.connection,
+                contractStatePda,
+                walnMint
+            );
+
+            const fixedAddrs = [
+                contractStatePda,
+                roundLockedWaln,
+                treasury,
+                walnMint,
+                walnVault,
+                TOKEN_2022_PROGRAM_ID,
+                ASSOCIATED_TOKEN_PROGRAM_ID,
+                SystemProgram.programId,
+                ...hookAccounts.map((a) => a.pubkey),
+            ];
+            const perInvestorAddrs = participants.flatMap((p) => [p.wallet, p.ata]);
+            const altAddrs = [...fixedAddrs, ...perInvestorAddrs];
+
+            const recentSlot = await provider.connection.getSlot("finalized");
+            const [createAltIx, altAddress] =
+                AddressLookupTableProgram.createLookupTable({
+                    authority: admin.publicKey,
+                    payer: admin.publicKey,
+                    recentSlot,
+                });
+            await provider.sendAndConfirm(new Transaction().add(createAltIx));
+
+            for (let i = 0; i < altAddrs.length; i += 25) {
+                const chunk = altAddrs.slice(i, i + 25);
+                await provider.sendAndConfirm(
+                    new Transaction().add(
+                        AddressLookupTableProgram.extendLookupTable({
+                            payer: admin.publicKey,
+                            authority: admin.publicKey,
+                            lookupTable: altAddress,
+                            addresses: chunk,
+                        })
+                    )
+                );
+            }
+
+            // ALT needs to warm up one slot before it can be used.
+            await sleep(1500);
+            const lookupTableAccount = (
+                await provider.connection.getAddressLookupTable(altAddress)
+            ).value;
+            assert.ok(lookupTableAccount, "ALT should be fetchable");
+            assert.equal(
+                lookupTableAccount!.state.addresses.length,
+                altAddrs.length,
+                "ALT should contain every batch account"
+            );
+
+            const buildBatchTx = async (
+                slice: {wallet: PublicKey; ata: PublicKey}[],
+                blockhash: string
+            ) => {
+                const ix = await sdk.finalizeClaimForAllIx({
+                    admin: admin.publicKey,
+                    walnMint,
+                    roundIndex: roundIdx,
+                    investors: slice.map((p) => ({wallet: p.wallet, ata: p.ata})),
+                    walnTokenProgram: TOKEN_2022_PROGRAM_ID,
+                });
+                const msg = new TransactionMessage({
+                    payerKey: admin.publicKey,
+                    recentBlockhash: blockhash,
+                    instructions: [
+                        ComputeBudgetProgram.setComputeUnitLimit({units: 1_400_000}),
+                        ix,
+                    ],
+                }).compileToV0Message([lookupTableAccount!]);
+                return new VersionedTransaction(msg);
+            };
+
+            // ---------------------------------------------------------------
+            // Probe: simulate increasing batch sizes against the (still fully
+            // unclaimed) state to find the max investors per transaction.
+            // ---------------------------------------------------------------
+            const {blockhash: simBlockhash} =
+                await provider.connection.getLatestBlockhash();
+
+            console.log(
+                "    [probe] batch |  msgBytes | CU consumed | result"
+            );
+            let maxBatch = 0;
+            for (let batch = 1; batch <= participants.length; batch += 1) {
+                const tx = await buildBatchTx(
+                    participants.slice(0, batch),
+                    simBlockhash
+                );
+                const msgBytes = tx.message.serialize().length;
+                const sim = await provider.connection.simulateTransaction(tx, {
+                    sigVerify: false,
+                    replaceRecentBlockhash: true,
+                });
+                const cu = sim.value.unitsConsumed ?? 0;
+                const ok = sim.value.err === null && msgBytes <= 1232;
+                console.log(
+                    `    [probe] ${String(batch).padStart(5)} | ${String(
+                        msgBytes
+                    ).padStart(8)} | ${String(cu).padStart(11)} | ${
+                        ok ? "OK" : "FAIL " + JSON.stringify(sim.value.err)
+                    }`
+                );
+                if (ok) maxBatch = batch;
+                else break;
+            }
+            assert.ok(maxBatch > 0, "at least one batch size must simulate cleanly");
+            console.log(`    [probe] MAX investors per finalize tx: ${maxBatch}`);
+
+            // ---------------------------------------------------------------
+            // Execute for real: drain every participant in batches of maxBatch.
+            // ---------------------------------------------------------------
+            const totalExpected = participants.reduce((s, p) => s + p.amount, 0n);
+            const vaultBefore = await getTokenBalance(
+                provider,
+                walnVault,
+                TOKEN_2022_PROGRAM_ID
+            );
+            const sampleIdx = [0, Math.floor(participants.length / 2), participants.length - 1];
+            const sampleBefore = new Map<number, bigint>();
+            for (const i of sampleIdx) {
+                let bal = 0n;
+                try {
+                    bal = await getTokenBalance(provider, participants[i].ata, TOKEN_2022_PROGRAM_ID);
+                } catch {
+                    bal = 0n;
+                }
+                sampleBefore.set(i, bal);
+            }
+
+            let txCount = 0;
+            for (let i = 0; i < participants.length; i += maxBatch) {
+                const slice = participants.slice(i, i + maxBatch);
+                const {blockhash} = await provider.connection.getLatestBlockhash();
+                const tx = await buildBatchTx(slice, blockhash);
+                tx.sign([admin]);
+                const sig = await provider.connection.sendTransaction(tx, {
+                    skipPreflight: false,
+                });
+                await provider.connection.confirmTransaction(sig, "confirmed");
+                txCount += 1;
+            }
+            console.log(
+                `    [finalize] drained ${participants.length} investors in ${txCount} tx(s) of up to ${maxBatch}`
+            );
+
+            // ---------------------------------------------------------------
+            // Assertions: balances credited, vault drained, PDA closed.
+            // ---------------------------------------------------------------
+            for (const i of sampleIdx) {
+                const after = await getTokenBalance(
+                    provider,
+                    participants[i].ata,
+                    TOKEN_2022_PROGRAM_ID
+                );
+                assert.equal(
+                    after - sampleBefore.get(i)!,
+                    participants[i].amount,
+                    `participant[${i}] should receive their full wALN allocation`
+                );
+            }
+
+            const vaultAfter = await getTokenBalance(
+                provider,
+                walnVault,
+                TOKEN_2022_PROGRAM_ID
+            );
+            assert.equal(
+                vaultBefore - vaultAfter,
+                totalExpected,
+                "vault should be debited by the sum of all allocations"
+            );
+
+            const closed = await provider.connection.getAccountInfo(roundLockedWaln);
+            assert.equal(
+                closed,
+                null,
+                "RoundLockedWaln PDA must be closed once remaining_to_claim hits 0"
+            );
         });
     });
 });

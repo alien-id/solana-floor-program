@@ -5,7 +5,7 @@ use solana_security_txt::security_txt;
 
 #[cfg(not(feature = "no-entrypoint"))]
 security_txt! {
-    name: "ALN Floor Contract",
+    name: "WALN Floor Contract",
     project_url: "https://alien.org/",
     contacts: "email:aliensol@eti.gg, twitter:@alienorg",
     policy: "https://alien.org/sol-security-policy",
@@ -15,13 +15,13 @@ security_txt! {
 
 pub mod errors;
 pub mod instructions;
-pub mod utils;
 pub mod seeds;
 pub mod state;
+pub mod utils;
 
 use instructions::*;
 
-declare_id!("3tBjDJHPCMmKjxRAxTHiaUmZ9Li1D8YvWCS48pBMjRSe");
+declare_id!("ALNoo9J8FCH2zPNMjktVu3B3jQEnvobc7RwkXnqyJrkZ");
 
 #[program]
 pub mod floor_program {
@@ -33,12 +33,7 @@ pub mod floor_program {
         round_size_waln: u64,
         lock_period_seconds: i64,
     ) -> Result<()> {
-        initialize::handler(
-            ctx,
-            floor_price_usdc,
-            round_size_waln,
-            lock_period_seconds,
-        )
+        initialize::handler(ctx, floor_price_usdc, round_size_waln, lock_period_seconds)
     }
 
     pub fn set_floor_price(ctx: Context<AdminOnly>, new_price_usdc: u64) -> Result<()> {
@@ -81,9 +76,7 @@ pub mod floor_program {
         admin::remove_investor_from_pool(ctx)
     }
 
-    pub fn close_round<'info>(
-        ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>,
-    ) -> Result<()> {
+    pub fn close_round<'info>(ctx: Context<'_, '_, 'info, 'info, CloseRound<'info>>) -> Result<()> {
         close_round::close_round(ctx)
     }
 
@@ -117,6 +110,13 @@ pub mod floor_program {
         claim_waln::handler(ctx, round_index)
     }
 
+    pub fn finalize_claim_for_all<'info>(
+        ctx: Context<'_, '_, 'info, 'info, FinalizeClaimForAll<'info>>,
+        round_index: u64,
+    ) -> Result<()> {
+        finalize_claim_for_all::handler(ctx, round_index)
+    }
+
     pub fn mint_aat_nft(ctx: Context<MintAatNft>, aat_volume: u64) -> Result<()> {
         mint_aat_nft::handler(ctx, aat_volume)
     }
@@ -131,9 +131,5 @@ pub mod floor_program {
 
     pub fn accept_authority(ctx: Context<AcceptAuthority>) -> Result<()> {
         transfer_authority::accept_authority(ctx)
-    }
-
-    pub fn close_round_record(ctx: Context<CloseRoundRecord>, round_index: u64) -> Result<()> {
-        close_round::close_round_record(ctx, round_index)
     }
 }

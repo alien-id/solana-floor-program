@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::errors::FloorError;
-use crate::state::{InvestorRecord, MAX_INVESTORS, MIN_SELL_WALN};
+use crate::state::{InvestorRecord, MIN_SELL_WALN};
 
 pub fn execute_round_start(
     investors: &mut [InvestorRecord],
@@ -20,7 +20,7 @@ pub fn execute_round_start(
 
     let min_deposit = round_cap_usdc / 2;
 
-    let mut eligible = [false; MAX_INVESTORS];
+    let mut eligible = vec![false; investors.len()];
     for (i, record) in investors.iter().enumerate() {
         eligible[i] = record.usdc_deposited > 0
             && record.aat_volume > 0
@@ -131,6 +131,9 @@ pub fn require_viable_round_params(
         .checked_div(waln_scale)
         .ok_or(FloorError::ArithmeticOverflow)?;
     require!(round_cap_usdc > 0, FloorError::InvalidParameter);
-    require!(round_size_waln >= MIN_SELL_WALN, FloorError::InvalidParameter);
+    require!(
+        round_size_waln >= MIN_SELL_WALN,
+        FloorError::InvalidParameter
+    );
     Ok(())
 }

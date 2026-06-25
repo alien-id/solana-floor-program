@@ -1,8 +1,6 @@
 use anchor_lang::prelude::*;
 
-pub const MAX_INVESTORS: usize = 100;
 pub const MIN_SELL_WALN: u64 = 1_000_000_000;
-
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug)]
 pub struct InvestorAlloc {
@@ -19,13 +17,11 @@ pub struct RoundLockedWaln {
     pub round_index: u64,
     pub bump: u8,
     pub unlock: i64,
-    // how many participants still need to claim before the account can close
     pub remaining_to_claim: u32,
     pub investors: Vec<InvestorAlloc>,
 }
 
 impl RoundLockedWaln {
-    // round_index(8) + bump(1) + unlock(8) + remaining_to_claim(4) + Vec len prefix(4)
     pub const FIXED_SIZE: usize = 8 + 1 + 8 + 4 + 4;
     pub fn space(n: usize) -> usize {
         8 + Self::FIXED_SIZE + n * InvestorAlloc::SIZE
@@ -64,7 +60,7 @@ pub struct ProgramState {
     pub frozen: u8,
 }
 
-#[zero_copy]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug)]
 pub struct InvestorRecord {
     pub investor: Pubkey,
     pub usdc_deposited: u64,
@@ -75,24 +71,21 @@ pub struct InvestorRecord {
     pub usdc_unlock_ts: i64,
 }
 
-#[account(zero_copy)]
-pub struct InvestorPool {
-    pub count: u32,
-    pub bump: u8,
-    pub _padding: [u8; 3],
-    pub investors: [InvestorRecord; MAX_INVESTORS],
+impl InvestorRecord {
+    pub const SIZE: usize = 32 + 8 + 8 + 8 + 8 + 8 + 8;
 }
 
 #[account]
-#[derive(InitSpace)]
-pub struct RoundRecord {
-    pub round_index: u64,
-    pub triggered_at: i64,
-    pub waln_purchased: u64,
-    pub usdc_spent: u64,
-    pub total_aat_volume_at_trigger: u64,
-    pub participant_count: u32,
+pub struct InvestorPool {
     pub bump: u8,
+    pub investors: Vec<InvestorRecord>,
+}
+
+impl InvestorPool {
+    pub const FIXED_SIZE: usize = 1 + 4;
+    pub fn space(n: usize) -> usize {
+        8 + Self::FIXED_SIZE + n * InvestorRecord::SIZE
+    }
 }
 
 #[event]
@@ -109,6 +102,16 @@ pub struct RoundClosed {
     pub round_index: u64,
     pub waln_purchased: u64,
     pub usdc_spent: u64,
+    pub total_aat_volume_at_trigger: u64,
     pub participant_count: u32,
     pub unlock: i64,
+}
+
+/// Emitted once per investor whose locked wALN allocation is settled, by either the
+/// investor's own `claim_waln` or the admin's `finalize_claim_for_all`.
+#[event]
+pub struct WalnClaimed {
+    pub round_index: u64,
+    pub investor: Pubkey,
+    pub waln_amount: u64,
 }

@@ -47,21 +47,22 @@ async function main() {
   );
 
   const [contractStatePda] = sdk.contractStatePda();
-  const stateAccount = await sdk.program.account.programState.fetch(contractStatePda);
+  const stateAccount = await sdk.program.account.programState.fetch(
+    contractStatePda
+  );
   const currentRoundIndex = new BN(stateAccount.roundCount.toString());
-  const [roundRecord] = sdk.roundRecordPda(currentRoundIndex);
   const [roundLockedWaln] = sdk.roundLockedWalnPda(currentRoundIndex);
 
   const ix = await sdk.sellWalnIx({
+    caller: payer.publicKey,
     seller: payer.publicKey,
     sellerWalnAccount: sellerWalnAccount.address,
     sellerUsdcAccount: sellerUsdcAccount.address,
     walnMint,
     usdcMint,
-    walnAmount,
+    maxWalnAmount: walnAmount,
     walnTokenProgram: TOKEN_2022_PROGRAM_ID,
     roundTriggerAccounts: [
-      { pubkey: roundRecord, isWritable: true },
       { pubkey: roundLockedWaln, isWritable: true },
     ],
   });

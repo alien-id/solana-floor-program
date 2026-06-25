@@ -1,17 +1,28 @@
 use crate::utils::{
     get_aat_nft_mint_address, get_contract_state_address, get_investor_pool_address,
-    get_nft_authority_address, get_program_data_address, get_treasury_address,
-    get_usdc_vault_address, get_waln_vault_address,
+    get_nft_authority_address, get_program_data_address, get_round_locked_waln_address,
+    get_treasury_address, get_usdc_vault_address, get_waln_vault_address,
 };
-use anchor_client::{
-    solana_sdk::pubkey::Pubkey,
-    Program,
-};
-use anchor_lang::solana_program::system_program;
-use anyhow::{anyhow, Result};
-use floor_program::state::{InvestorPool, ProgramState};
-use std::sync::Arc;
+use anchor_client::solana_sdk::instruction::AccountMeta;
 use anchor_client::solana_sdk::signature::Keypair;
+use anchor_client::{solana_sdk::pubkey::Pubkey, Program};
+use anchor_lang::{solana_program::system_program, AccountDeserialize};
+use anyhow::{anyhow, Result};
+use floor_program::state::{InvestorPool, ProgramState, RoundLockedWaln};
+use spl_token_2022::extension::transfer_hook::TransferHook;
+use spl_token_2022::extension::{BaseStateWithExtensions, StateWithExtensions};
+use spl_token_2022::state::Mint as Token2022Mint;
+use std::sync::Arc;
+
+/// Number of shared transfer-hook accounts prepended once when the wALN mint has a
+/// transfer hook. Mirrors `HOOK_ACCOUNTS` / `validate_hook_accounts` in the program.
+const HOOK_ACCOUNTS: usize = 8;
+
+/// Default number of investors settled per `finalize_claim_for_all` transaction.
+/// Each investor consumes 2 accounts (wallet + ATA); together with the fixed and
+/// hook accounts this stays comfortably under the legacy transaction size limit,
+/// so no Address Lookup Table is required.
+const DEFAULT_FINALIZE_BATCH_SIZE: usize = 8;
 
 fn load_zero_copy<T: bytemuck::Pod>(
     rpc: &solana_rpc_client::rpc_client::RpcClient,
@@ -32,6 +43,15 @@ fn load_zero_copy<T: bytemuck::Pod>(
     Ok(*value)
 }
 
+fn load_anchor_account<T: AccountDeserialize>(
+    rpc: &solana_rpc_client::rpc_client::RpcClient,
+    pubkey: &Pubkey,
+) -> Result<T> {
+    let account = rpc.get_account(pubkey)?;
+    let mut data: &[u8] = &account.data;
+    T::try_deserialize(&mut data).map_err(|e| anyhow!("Failed to deserialize account: {}", e))
+}
+
 pub fn handle_info(program: &Program<Arc<Keypair>>) -> Result<()> {
     let program_id = program.id();
     let (contract_state_pubkey, _) = get_contract_state_address(&program_id);
@@ -42,7 +62,7 @@ pub fn handle_info(program: &Program<Arc<Keypair>>) -> Result<()> {
 
     let rpc = program.rpc();
     let state = load_zero_copy::<ProgramState>(&rpc, &contract_state_pubkey)?;
-    let pool = load_zero_copy::<InvestorPool>(&rpc, &investor_pool_pubkey)?;
+    let pool = load_anchor_account::<InvestorPool>(&rpc, &investor_pool_pubkey)?;
 
     let usdc_scale = 10_f64.powi(state.usdc_decimals as i32);
     let waln_scale = 10_f64.powi(state.waln_decimals as i32);
@@ -62,10 +82,16 @@ pub fn handle_info(program: &Program<Arc<Keypair>>) -> Result<()> {
 
     println!("\n=== Floor Program State ===\n");
     println!("Program ID:     {}", program_id);
-    println!("Contract State: {} (must be whitelisted in transfer hook)", contract_state_pubkey);
+    println!(
+        "Contract State: {} (must be whitelisted in transfer hook)",
+        contract_state_pubkey
+    );
     println!("Admin:          {}", state.admin);
     if state.pending_admin != Pubkey::default() {
-        println!("Pending Admin:  {} (transfer in progress)", state.pending_admin);
+        println!(
+            "Pending Admin:  {} (transfer in progress)",
+            state.pending_admin
+        );
     }
     println!("USDC Mint:      {}", state.usdc_mint);
     println!("WALN Mint:      {}", state.waln_mint);
@@ -101,7 +127,10 @@ pub fn handle_info(program: &Program<Arc<Keypair>>) -> Result<()> {
         state.round_size_waln as f64 / waln_scale
     );
     println!("Lock Period:    {} seconds", state.lock_period_seconds);
-    println!("USDC Withdraw Lock: {} seconds", state.usdc_withdraw_lock_seconds);
+    println!(
+        "USDC Withdraw Lock: {} seconds",
+        state.usdc_withdraw_lock_seconds
+    );
     println!("Sell Paused:    {}", state.sell_paused == 1);
     println!("Frozen:         {}", state.frozen == 1);
 
@@ -142,12 +171,11 @@ pub fn handle_info(program: &Program<Arc<Keypair>>) -> Result<()> {
         state.waln_dust_carryover as f64 / waln_scale
     );
 
-    println!("\n--- Investor Pool ({} investors) ---", pool.count);
-    let count = pool.count as usize;
-    for record in pool.investors[..count].iter() {
-        if record.investor == Pubkey::default() {
-            continue;
-        }
+    println!(
+        "\n--- Investor Pool ({} investors) ---",
+        pool.investors.len()
+    );
+    for record in pool.investors.iter() {
         println!(
             "  {} | deposited: {:.6} USDC | locked: {:.6} USDC | committed: {:.6} USDC | waln: {:.6} WALN | aat: {} | usdc_unlock_ts: {}",
             record.investor,
@@ -392,10 +420,7 @@ pub fn handle_withdraw_treasury(
     Ok(())
 }
 
-pub fn handle_transfer_authority(
-    program: &Program<Arc<Keypair>>,
-    new_admin: Pubkey,
-) -> Result<()> {
+pub fn handle_transfer_authority(program: &Program<Arc<Keypair>>, new_admin: Pubkey) -> Result<()> {
     let program_id = program.id();
     let (contract_state, _) = get_contract_state_address(&program_id);
 
@@ -443,7 +468,10 @@ pub fn handle_set_usdc_withdraw_lock(
     let program_id = program.id();
     let (contract_state, _) = get_contract_state_address(&program_id);
 
-    println!("Setting USDC withdraw lock to: {} seconds", new_lock_seconds);
+    println!(
+        "Setting USDC withdraw lock to: {} seconds",
+        new_lock_seconds
+    );
 
     let tx = program
         .request()
@@ -606,5 +634,201 @@ pub fn handle_mint_aat_nft(
         .send()?;
 
     println!("Transaction successful: {}", tx);
+    Ok(())
+}
+
+/// Resolves the 8 shared transfer-hook accounts for a wALN transfer whose source
+/// authority is `owner` (the program's `contract_state` PDA). The order and read-only
+/// flags match `validate_hook_accounts` in the program and the SAS hook's
+/// `transfer_hook` instruction exactly. Returns an empty vec when the mint carries no
+/// transfer hook, in which case the program also expects zero hook accounts.
+fn build_finalize_hook_accounts(
+    rpc: &solana_rpc_client::rpc_client::RpcClient,
+    owner: &Pubkey,
+    mint: &Pubkey,
+) -> Result<Vec<AccountMeta>> {
+    let mint_account = rpc.get_account(mint)?;
+    // SPL Token (non-2022) mints cannot carry a transfer hook.
+    if mint_account.owner != spl_token_2022::ID {
+        return Ok(vec![]);
+    }
+
+    let mint_state = StateWithExtensions::<Token2022Mint>::unpack(&mint_account.data)
+        .map_err(|e| anyhow!("Failed to unpack wALN mint extensions: {}", e))?;
+    let hook_program_id = match mint_state.get_extension::<TransferHook>() {
+        Ok(hook) => match Option::<Pubkey>::from(hook.program_id) {
+            Some(id) => id,
+            None => return Ok(vec![]),
+        },
+        Err(_) => return Ok(vec![]),
+    };
+
+    let (config, _) = Pubkey::find_program_address(&[b"config", mint.as_ref()], &hook_program_id);
+    let config_account = rpc.get_account(&config)?;
+    if config_account.data.len() < 136 {
+        return Err(anyhow!(
+            "hook config account {} too small ({} bytes)",
+            config,
+            config_account.data.len()
+        ));
+    }
+    let credential = Pubkey::new_from_array(config_account.data[40..72].try_into().unwrap());
+    let schema = Pubkey::new_from_array(config_account.data[72..104].try_into().unwrap());
+    let sas_program = Pubkey::new_from_array(config_account.data[104..136].try_into().unwrap());
+
+    let (attestation, _) = Pubkey::find_program_address(
+        &[
+            b"attestation",
+            credential.as_ref(),
+            schema.as_ref(),
+            owner.as_ref(),
+        ],
+        &sas_program,
+    );
+    let (whitelist, _) = Pubkey::find_program_address(
+        &[b"whitelist", mint.as_ref(), owner.as_ref()],
+        &hook_program_id,
+    );
+    let (extra_account_metas, _) =
+        Pubkey::find_program_address(&[b"extra-account-metas", mint.as_ref()], &hook_program_id);
+
+    Ok(vec![
+        AccountMeta::new_readonly(config, false),
+        AccountMeta::new_readonly(credential, false),
+        AccountMeta::new_readonly(schema, false),
+        AccountMeta::new_readonly(sas_program, false),
+        AccountMeta::new_readonly(attestation, false),
+        AccountMeta::new_readonly(whitelist, false),
+        AccountMeta::new_readonly(hook_program_id, false),
+        AccountMeta::new_readonly(extra_account_metas, false),
+    ])
+}
+
+/// Admin-driven settlement of every unclaimed wALN allocation in a locked round.
+///
+/// Re-fetches the `RoundLockedWaln` account before each batch, filters to the
+/// investors that still have `waln_amount > 0` (so investors who self-claimed via
+/// `claim_waln` are skipped — including one already-claimed entry would revert the
+/// whole batch with `AlreadyClaimed`), and pushes up to `batch_size` of them per
+/// transaction. Loops until none remain; the program closes the round account and
+/// refunds its rent to the treasury when the final allocation is settled.
+pub fn handle_finalize_claim_for_all(
+    program: &Program<Arc<Keypair>>,
+    round_index: u64,
+    batch_size: Option<usize>,
+) -> Result<()> {
+    let batch_size = batch_size.unwrap_or(DEFAULT_FINALIZE_BATCH_SIZE);
+    if batch_size == 0 {
+        return Err(anyhow!("batch size must be at least 1"));
+    }
+
+    let program_id = program.id();
+    let (contract_state, _) = get_contract_state_address(&program_id);
+    let (waln_vault, _) = get_waln_vault_address(&program_id);
+    let (treasury, _) = get_treasury_address(&program_id);
+    let (round_locked_waln, _) = get_round_locked_waln_address(round_index, &program_id);
+
+    let rpc = program.rpc();
+    let state = load_zero_copy::<ProgramState>(&rpc, &contract_state)?;
+    let waln_mint = state.waln_mint;
+    let waln_token_program = anchor_spl::token_2022::ID;
+
+    println!("Finalizing claims for round {}...", round_index);
+    println!("  Round Locked wALN: {}", round_locked_waln);
+    println!("  wALN Mint:         {}", waln_mint);
+    println!("  Batch size:        {}", batch_size);
+
+    let mut total_settled = 0usize;
+    let mut batch_no = 0usize;
+
+    loop {
+        // Re-fetch before each batch so concurrent `claim_waln` self-claims are
+        // reflected; a missing account means the round was fully settled and closed.
+        let rlw = match load_anchor_account::<RoundLockedWaln>(&rpc, &round_locked_waln) {
+            Ok(rlw) => rlw,
+            Err(_) => {
+                if total_settled == 0 {
+                    println!(
+                        "Round account {} not found — nothing to finalize (already closed or never created).",
+                        round_locked_waln
+                    );
+                } else {
+                    println!("Round account closed — all allocations settled.");
+                }
+                break;
+            }
+        };
+
+        let unclaimed: Vec<Pubkey> = rlw
+            .investors
+            .iter()
+            .filter(|a| a.waln_amount > 0)
+            .map(|a| a.investor)
+            .collect();
+
+        if unclaimed.is_empty() {
+            println!("No unclaimed allocations remain for round {}.", round_index);
+            println!(
+                "  remaining_to_claim = {} (account still open; rent refunds on the final claim)",
+                rlw.remaining_to_claim
+            );
+            break;
+        }
+
+        if batch_no == 0 {
+            println!("  Unclaimed allocations: {}", unclaimed.len());
+        }
+
+        let batch: Vec<Pubkey> = unclaimed.into_iter().take(batch_size).collect();
+
+        // Shared hook accounts are derived from the mint + source authority
+        // (contract_state), so they are identical for every recipient.
+        let hook_accounts = build_finalize_hook_accounts(&rpc, &contract_state, &waln_mint)?;
+        debug_assert!(hook_accounts.is_empty() || hook_accounts.len() == HOOK_ACCOUNTS);
+
+        let mut remaining = hook_accounts;
+        for wallet in &batch {
+            let ata = anchor_spl::associated_token::get_associated_token_address_with_program_id(
+                wallet,
+                &waln_mint,
+                &waln_token_program,
+            );
+            remaining.push(AccountMeta::new_readonly(*wallet, false));
+            remaining.push(AccountMeta::new(ata, false));
+        }
+
+        let mut request = program
+            .request()
+            .accounts(floor_program::accounts::FinalizeClaimForAll {
+                admin: program.payer(),
+                contract_state,
+                round_locked_waln,
+                treasury,
+                waln_mint,
+                waln_vault,
+                waln_token_program,
+                associated_token_program: anchor_spl::associated_token::ID,
+                system_program: system_program::ID,
+            })
+            .args(floor_program::instruction::FinalizeClaimForAll { round_index });
+        for meta in remaining {
+            request = request.accounts(meta);
+        }
+
+        let tx = request.send()?;
+        total_settled += batch.len();
+        batch_no += 1;
+        println!(
+            "  Batch {}: settled {} investor(s) | tx {}",
+            batch_no,
+            batch.len(),
+            tx
+        );
+    }
+
+    println!(
+        "Done. Settled {} allocation(s) across {} transaction(s).",
+        total_settled, batch_no
+    );
     Ok(())
 }
