@@ -317,7 +317,7 @@ pub fn handler<'info>(
         let mut total_waln_purchased: u64 = 0;
         let mut total_aat_volume_at_trigger: u64 = 0;
 
-        let mut participant_data: Vec<(Pubkey, u64)> =
+        let mut participant_data: Vec<(Pubkey, u64, u64)> =
             Vec::with_capacity(ctx.accounts.investor_pool.investors.len());
         let mut participant_count_for_dust: u64 = 0;
 
@@ -366,7 +366,7 @@ pub fn handler<'info>(
                     .checked_add(base_waln)
                     .ok_or(FloorError::ArithmeticOverflow)?;
 
-                participant_data.push((investor, base_waln));
+                participant_data.push((investor, base_waln, usdc_locked));
             }
         }
 
@@ -399,7 +399,7 @@ pub fn handler<'info>(
         }
 
         let participant_count = participant_data.len() as u32;
-        participant_data.retain(|(_, waln_amount)| *waln_amount > 0);
+        participant_data.retain(|(_, waln_amount, _)| *waln_amount > 0);
         participant_data.sort_unstable_by(|a, b| a.0.to_bytes().cmp(&b.0.to_bytes()));
 
         if !participant_data.is_empty() {
@@ -473,7 +473,7 @@ pub fn handler<'info>(
             {
                 let entries: Vec<InvestorAlloc> = participant_data
                     .iter()
-                    .map(|(investor, waln_amount)| InvestorAlloc {
+                    .map(|(investor, waln_amount, _)| InvestorAlloc {
                         investor: *investor,
                         waln_amount: *waln_amount,
                     })
@@ -496,16 +496,7 @@ pub fn handler<'info>(
         let round_index_le = round_index.to_le_bytes();
         let unlock_le = unlock_timestamp.to_le_bytes();
 
-        for (investor, waln_amount) in participant_data.iter() {
-            let usdc_spent_for = u64::try_from(
-                (*waln_amount as u128)
-                    .checked_mul(floor_price_usdc as u128)
-                    .ok_or(FloorError::ArithmeticOverflow)?
-                    .checked_div(waln_scale)
-                    .ok_or(FloorError::ArithmeticOverflow)?,
-            )
-            .map_err(|_| FloorError::ArithmeticOverflow)?;
-
+        for (investor, waln_amount, usdc_spent_for) in participant_data.iter() {
             let mut buf = [0u8; ALLOC_LOG_LEN];
             buf[0..8].copy_from_slice(alloc_disc);
             buf[8..16].copy_from_slice(&round_index_le);
