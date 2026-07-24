@@ -14,6 +14,11 @@ use crate::utils::verify_aat_nft_and_get_allocation;
 pub struct DepositUsdc<'info> {
     #[account(mut)]
     pub investor: Signer<'info>,
+    #[account(
+        mut,
+        owner = system_program.key(),
+    )]
+    pub rent_payer: Signer<'info>,
 
     #[account(
         mut,
@@ -130,14 +135,17 @@ pub fn handler(ctx: Context<DepositUsdc>, usdc_amount: u64) -> Result<()> {
         let pool_info = ctx.accounts.investor_pool.to_account_info();
         let current_lamports = pool_info.lamports();
         if current_lamports < new_rent {
+            let top_up = new_rent
+                .checked_sub(current_lamports)
+                .ok_or(FloorError::ArithmeticOverflow)?;
             invoke(
                 &system_instruction::transfer(
-                    &ctx.accounts.investor.key(),
+                    &ctx.accounts.rent_payer.key(),
                     pool_info.key,
-                    new_rent - current_lamports,
+                    top_up,
                 ),
                 &[
-                    ctx.accounts.investor.to_account_info(),
+                    ctx.accounts.rent_payer.to_account_info(),
                     pool_info.clone(),
                     ctx.accounts.system_program.to_account_info(),
                 ],
