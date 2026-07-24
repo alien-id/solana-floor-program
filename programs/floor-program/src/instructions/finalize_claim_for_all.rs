@@ -138,7 +138,9 @@ pub fn handler<'info>(
                 .binary_search_by_key(&investor_key.to_bytes(), |a| a.investor.to_bytes())
                 .map_err(|_| error!(FloorError::InvalidInvestor))?;
             let alloc = &mut rlw.investors[idx];
-            require!(alloc.waln_amount > 0, FloorError::AlreadyClaimed);
+            if alloc.waln_amount == 0 {
+                continue;
+            }
             let amount = alloc.waln_amount;
             alloc.waln_amount = 0;
             rlw.remaining_to_claim = rlw
