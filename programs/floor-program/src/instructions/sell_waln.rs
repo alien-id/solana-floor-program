@@ -491,6 +491,18 @@ pub fn handler<'info>(
             }
         }
 
+        // Per-investor `RoundClosed` logs remain best-effort; indexers
+        // must fall back to `RoundLockedWaln` / `ProgramState` for the
+        // authoritative allocation set.
+        emit!(RoundClosed {
+            round_index,
+            waln_purchased: total_waln_purchased,
+            usdc_spent: total_usdc_spent,
+            total_aat_volume_at_trigger,
+            participant_count,
+            unlock: unlock_timestamp,
+        });
+
         const ALLOC_LOG_LEN: usize = 8 + 8 + 32 + 8 + 8 + 8;
         let alloc_disc = InvestorAllocated::DISCRIMINATOR;
         let round_index_le = round_index.to_le_bytes();
@@ -516,15 +528,6 @@ pub fn handler<'info>(
 
             sol_log_data(&[&buf]);
         }
-
-        emit!(RoundClosed {
-            round_index,
-            waln_purchased: total_waln_purchased,
-            usdc_spent: total_usdc_spent,
-            total_aat_volume_at_trigger,
-            participant_count,
-            unlock: unlock_timestamp,
-        });
 
         state.round_count = state
             .round_count
