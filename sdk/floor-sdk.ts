@@ -255,6 +255,7 @@ export class FloorSdk {
     aatNft: PublicKey;
     usdcAmount: BN;
     usdcTokenProgram?: PublicKey;
+    rentPayer?: PublicKey;
   }): Promise<TransactionInstruction> {
     const [contractState] = this.contractStatePda();
     const [usdcVault] = this.usdcVaultPda();
@@ -268,6 +269,7 @@ export class FloorSdk {
       .depositUsdc(args.usdcAmount)
       .accounts({
         investor: args.investor,
+        rentPayer: args.rentPayer ?? args.investor,
         contractState,
         investorPool,
         usdcMint: args.usdcMint,
