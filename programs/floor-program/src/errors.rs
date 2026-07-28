@@ -62,4 +62,6 @@ pub enum FloorError {
     FundsLocked,
     #[msg("Investor does not hold a valid AAT NFT from the configured collection")]
     NoAatNft,
+    #[msg("Round state is invalid — locked USDC does not cover the full round cap")]
+    InvalidRoundState,
 }
