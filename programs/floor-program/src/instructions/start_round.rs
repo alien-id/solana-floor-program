@@ -116,6 +116,11 @@ pub fn execute_round_start(
         }
     }
 
+    require!(
+        total_usdc_locked as u128 == round_cap_usdc,
+        FloorError::InvalidRoundState
+    );
+
     Ok((total_aat_volume, total_usdc_locked))
 }
 
